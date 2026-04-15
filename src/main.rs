@@ -1,4 +1,5 @@
 mod capture;
+mod process;
 
 use std::net::Ipv4Addr;
 
@@ -31,8 +32,8 @@ fn main() {
     };
 
     println!("Capturing on '{iface}' — Ctrl+C to stop\n");
-    println!("{:<22} {:<22} {:<6} {:>7}", "SRC", "DST", "PROTO", "BYTES");
-    println!("{}", "─".repeat(60));
+    println!("{:<22} {:<22} {:<6} {:>7} {}", "SRC", "DST", "PROTO", "BYTES", "PROCESS");
+    println!("{}", "─".repeat(80));
 
     // FR1 + FR2 – capture loop; Ctrl+C (SIGINT) terminates the process naturally
     let result = engine.run(|pkt| {
@@ -43,7 +44,20 @@ fn main() {
             Protocol::Udp      => "UDP".to_string(),
             Protocol::Other(n) => format!("#{n}"),
         };
-        println!("{src:<22} {dst:<22} {proto:<6} {:>7}", pkt.size_bytes);
+        let process_info = process::find_process(
+            pkt.protocol,
+            pkt.src_ip,
+            pkt.src_port,
+            pkt.dst_ip,
+            pkt.dst_port,
+        );
+
+        let process_str = match process_info {
+            Some(info) => format!("{}/{} ({})", info.pid, info.username, info.name),
+            None => "-".to_string(),
+        };
+
+        println!("{src:<22} {dst:<22} {proto:<6} {:>7} {}", pkt.size_bytes, process_str);
     });
 
     if let Err(e) = result {
