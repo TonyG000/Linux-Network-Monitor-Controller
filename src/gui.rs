@@ -3,9 +3,8 @@
 // FR6 – Live dashboard: bandwidth plot, top-process panel, top-host panel.
 // FR7 – Process ranking sorted by bandwidth, with inline bandwidth bars.
 //
-// Aesthetic: industrial / terminal-monitor.
-//   Dark panel background, high-density monospace data, green-on-dark
-//   sparkline, gold/silver/bronze rank highlights.
+// FR8 Traffic direction: bandwidth line split into outbound / inbound.
+// FR9 Connection detail view: click a process row to inspect its connections.
 
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
@@ -14,7 +13,7 @@ use std::time::Instant;
 use eframe::egui::{self, Color32, RichText, Visuals};
 use egui_plot::{Line, Plot, PlotPoints};
 
-use crate::stats::{Aggregator, PacketEvent};
+use crate::stats::{Aggregator, ConnectionRecord, PacketEvent};
 
 const GREEN:    Color32 = Color32::from_rgb(72,  199, 116);
 const CYAN:     Color32 = Color32::from_rgb(80,  200, 200);
@@ -24,6 +23,7 @@ const ORG_IN:   Color32 = Color32::from_rgb(255, 155, 80);
 const DIM:      Color32 = Color32::from_rgb(110, 110, 120);
 const PANEL_BG: Color32 = Color32::from_rgb(16,  18,  24);
 const CARD_BG:  Color32 = Color32::from_rgb(22,  25,  33);
+const RED_DIM:  Color32 = Color32::from_rgb(200, 80,  60);
 
 struct ProcRow {
     pid:     u32,
@@ -32,24 +32,60 @@ struct ProcRow {
     bw_bps:  f64,
     sent:    u64,
     recv:    u64,
-    bw_frac: f32,   // 0–1 relative to the top process
+    bw_frac: f32,
 }
 
 struct HostRow {
     addr:    String,
     bytes:   u64,
     packets: u64,
-    frac:    f32,   // 0–1 relative to top host
+    frac:    f32, 
+}
+
+
+//one connection for the detail panel.
+struct ConnRow {
+    pid: u32,
+    proc_name: String,
+    username: String,
+    protocol: String,
+    remote_addr: String,
+    remote_port: u16,
+    local_port: u16,
+    bytes_sent: u64,
+    bytes_recv: u64,
+    packets: u64,
+    age_secs: u64,
 }
 
 struct Snapshot {
     total_bytes:   u64,
     total_packets: u64,
     current_bps:   f64,
+    current_out_bps: f64,
+    current_in_bps: f64,
     active_procs:  usize,
-    bw_history:    Vec<[f64; 2]>,
+    bw_history_out: Vec<[f64; 2]>,
+    bw_history_in: Vec<[f64; 2]>,
     processes:     Vec<ProcRow>,
     hosts:         Vec<HostRow>,
+    top_conns: Vec<ConnRow>,
+}
+
+fn conn_row_from(r: &ConnectionRecord) -> ConnRow {
+    ConnRow {
+        pid: r.pid,
+        proc_name: r.proc_name.clone(),
+        username: r.username.clone(),
+        protocol: r.protocol.clone(),
+        remote_addr: r.remote_addr.clone(),
+        remote_port: r.remote_port,
+        local_port: r.local_port,
+        bytes_sent: r.bytes_sent,
+        bytes_recv: r.bytes_recv,
+        packets: r.packets,
+        age_secs: r.last_seen.elapsed().as_secs(),
+    }
 }
 
 fn snapshot(agg: &Aggregator) -> Snapshot {
@@ -74,15 +110,42 @@ fn snapshot(agg: &Aggregator) -> Snapshot {
         frac:    (h.bytes as f32 / max_bytes as f32).clamp(0.0, 1.0),
     }).collect();
 
+
+    //split history into two separate point sets for the two plot lines
+    let bw_history_out = agg.bandwidth_history.iter()
+        .map(|s| [s[0], s[1]])
+        .collect();
+
+    let bw_history_in  = agg.bandwidth_history.iter()
+        .map(|s| [s[0], s[2]])
+        .collect();
+ 
+    //global top-connections snapshot
+    let top_conns = agg.top_connections(50)
+        .iter()
+        .map(|r| conn_row_from(r))
+        .collect();
+
     Snapshot {
         total_bytes:   agg.total_bytes,
         total_packets: agg.total_packets,
         current_bps:   agg.current_bps,
+        current_out_bps: agg.current_out_bps,
+        current_in_bps: agg.current_in_bps,
         active_procs:  agg.active_process_count(),
-        bw_history:    agg.bandwidth_history.iter().copied().collect(),
+        bw_history_out,
+        bw_history_in,
         processes,
         hosts,
+        top_conns,
     }
+}
+
+
+#[derive(PartialEq, Clone, Copy)]
+enum RightTab {
+    Hosts,
+    Connections,
 }
 
 
@@ -93,6 +156,9 @@ pub struct NetMonApp {
     start:         Instant,
     /// false → can't read /proc/<pid>/fd, process column will always be empty
     proc_perm_ok:  bool,
+
+    selected_pid: Option<u32>,
+    right_tab:    RightTab,
 }
 
 impl NetMonApp {
@@ -102,7 +168,6 @@ impl NetMonApp {
         rx:         Receiver<PacketEvent>,
         iface:      String,
     ) -> Self {
-        // Terminal-monitor dark theme
         let mut vis          = Visuals::dark();
         vis.panel_fill       = PANEL_BG;
         vis.window_fill      = CARD_BG;
@@ -115,7 +180,15 @@ impl NetMonApp {
         // dir is a reliable proxy for "do we have root/CAP_SYS_PTRACE?".
         let proc_perm_ok = std::fs::read_dir("/proc/1/fd").is_ok();
 
-        Self { aggregator, rx, iface, start: Instant::now(), proc_perm_ok }
+        Self { 
+            aggregator, 
+            rx, 
+            iface, 
+            start: Instant::now(), 
+            proc_perm_ok,
+            selected_pid: None,
+            right_tab: RightTab::Connections, 
+        }
     }
 }
 
@@ -132,6 +205,20 @@ impl eframe::App for NetMonApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
 
         let snap   = snapshot(&*self.aggregator.lock().unwrap());
+
+        // if a PID is selected, pull its connections from the aggregator
+        let detail_conns: Vec<ConnRow> = if let Some(pid) = self.selected_pid {
+            self.aggregator.lock().unwrap()
+                .connections_for_pid(pid)
+                .iter()
+                .map(|r| conn_row_from(r))
+                .collect()
+        } 
+
+        else {
+            Vec::new()
+        };
+
         let uptime = self.start.elapsed().as_secs();
 
         // ── header bar ───────────────────────────────────────────────────────
@@ -142,7 +229,7 @@ impl eframe::App for NetMonApp {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new("⬡ NETMONITOR")
+                        RichText::new("NETMONITOR")
                             .strong()
                             .color(GREEN)
                             .size(17.0),
@@ -150,7 +237,11 @@ impl eframe::App for NetMonApp {
                     ui.separator();
                     ui.label(RichText::new(format!("if: {}", self.iface)).color(CYAN).monospace());
                     ui.separator();
-                    ui.label(RichText::new(format!("▲ {}/s", fmt_bytes(snap.current_bps as u64))).color(GREEN).strong());
+
+                    ui.label(RichText::new(format!("▲ {}/s", fmt_bytes(snap.current_out_bps as u64))).color(BLUE_OUT).strong());
+                    ui.label(RichText::new("▼").color(ORG_IN));
+                    ui.label(RichText::new(format!("{}/s", fmt_bytes(snap.current_in_bps as u64))).color(ORG_IN).strong());
+
                     ui.separator();
                     ui.label(RichText::new(format!("total  {}", fmt_bytes(snap.total_bytes))).color(YELLOW));
                     ui.separator();
@@ -170,31 +261,50 @@ impl eframe::App for NetMonApp {
                     ui.add_space(8.0);
                     ui.label(RichText::new("● LIVE").color(GREEN).small());
                     ui.label(RichText::new("  Ctrl+C in terminal to exit").color(DIM).small());
+
+                    if self.selected_pid.is_some() {
+                        ui.separator();
+                        ui.label(
+                            RichText::new("ESC or click header to deselect process")
+                                .color(YELLOW).small(),
+                        );
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
+
+                        let peak_out = snap.bw_history_out.iter().map(|p| p[1] as u64).max().unwrap_or(0);
+                        let peak_in  = snap.bw_history_in.iter().map(|p| p[1] as u64).max().unwrap_or(0);
+
                         ui.label(
                             RichText::new(format!(
-                                "peak  {}/s",
-                                fmt_bytes(
-                                    snap.bw_history.iter().map(|p| p[1] as u64).max().unwrap_or(0)
-                                )
+                                "peak ▲{}/s  ▼{}/s",
+                                fmt_bytes(peak_out),
+                                fmt_bytes(peak_in),
                             ))
-                            .color(DIM)
-                            .small(),
+                            .color(DIM).small(),
                         );
                     });
                 });
             });
 
+
+        // ESC clears process selection (FR9)
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.selected_pid = None;
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(PANEL_BG).inner_margin(egui::Margin::same(10.0)))
             .show(ctx, |ui| {
-                // FR6: bandwidth sparkline 
-                section_header(ui, "BANDWIDTH  (bytes / second)");
+                
+                section_header(ui, "BANDWIDTH  (bytes / second)  ▲ outbound   ▼ inbound");
 
-                let pts = PlotPoints::new(snap.bw_history.clone());
+                let pts_out = PlotPoints::new(snap.bw_history_out.clone());
+                let pts_in  = PlotPoints::new(snap.bw_history_in.clone());
+
                 Plot::new("bw")
-                    .height(155.0)
+                    .height(140.0)
                     .show_axes([true, true])
                     .x_axis_label("elapsed (s)")
                     .y_axis_label("bytes / s")
@@ -202,23 +312,50 @@ impl eframe::App for NetMonApp {
                     .set_margin_fraction(egui::Vec2::new(0.0, 0.12))
                     .show(ui, |pu| {
                         pu.line(
-                            Line::new(pts)
-                                .color(GREEN)
+                            Line::new(pts_out)
+                                .color(BLUE_OUT)
                                 .width(1.8)
-                                .name("B/s")
+                                .name("▲ Out B/s")
+                        );
+
+                        pu.line(
+                            Line::new(pts_in)
+                                .color(ORG_IN)
+                                .width(1.8)
+                                .name("▼ In B/s")
                                 .fill(0.0),
                         );
                     });
 
-                // Measure remaining height BEFORE splitting columns so both
-                // scroll areas get the same explicit max_height.
                 let table_h = ui.available_height() - 8.0;
 
                 ui.columns(2, |cols| {
                     // Left: FR7 process ranking 
                     {
                         let ui = &mut cols[0];
-                        section_header(ui, "TOP PROCESSES  (by bandwidth)");
+
+                        // header
+                        let hdr = if let Some(pid) = self.selected_pid {
+                            format!("TOP PROCESSES  (by bandwidth)  —  PID {} selected", pid)
+                        } 
+
+                        else {
+                            "TOP PROCESSES (by bandwidth): click row to inspect".to_string()
+                        };
+
+                        // Clicking the section header deselects
+                        let resp = ui.add(
+                            egui::Label::new(
+                                RichText::new(&hdr).color(CYAN).small().strong()
+                            ).sense(egui::Sense::click()),
+                        );
+
+                        if resp.clicked() { 
+                            self.selected_pid = None; 
+                        }
+
+                        ui.separator();
+                        ui.add_space(2.0);
 
                         egui::ScrollArea::vertical()
                             .id_source("procs")
@@ -232,6 +369,7 @@ impl eframe::App for NetMonApp {
                                             .fill(Color32::from_rgb(80, 30, 10))
                                             .inner_margin(egui::Margin::same(10.0))
                                             .rounding(egui::Rounding::same(4.0));
+                                        
                                         warn_frame.show(ui, |ui| {
                                             ui.label(
                                                 RichText::new("⚠  Missing permissions")
@@ -287,11 +425,49 @@ impl eframe::App for NetMonApp {
                                             ui.end_row();
 
                                             for (rank, row) in snap.processes.iter().enumerate() {
-                                                let name_col = rank_color(rank);
-                                                ui.label(RichText::new(format!("{}", rank + 1)).color(name_col).small().strong());
+                                                let is_sel  = self.selected_pid == Some(row.pid);
+                                                let name_col = if is_sel { YELLOW } else { rank_color(rank) };
+ 
+                                                // clicking selects 
+                                                let r = ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(format!("{}", rank + 1))
+                                                            .color(name_col).small().strong()
+                                                    ).sense(egui::Sense::click()),
+                                                );
+
+                                                if r.clicked() {
+                                                    self.selected_pid = Some(row.pid);
+                                                    self.right_tab    = RightTab::Connections;
+                                                }
+
                                                 ui.label(RichText::new(row.pid.to_string()).color(DIM).small().monospace());
-                                                ui.label(RichText::new(&row.name).color(name_col).monospace());
+
+
+                                                // Process name (clicking selects)
+                                                let rn = ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(&row.name)
+                                                            .color(name_col).monospace()
+                                                    ).sense(egui::Sense::click()),
+                                                );
+
+                                                if rn.clicked() {
+                                                    self.selected_pid = Some(row.pid);
+                                                    self.right_tab    = RightTab::Connections;
+                                                }
+
+                                                if rn.hovered() {
+                                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                                }
+
                                                 ui.label(RichText::new(&row.user).color(DIM).small());
+
+
+                                                ui.label(RichText::new(format!("{}", rank + 1)).color(name_col).small().strong());
+
+                                                ui.label(RichText::new(&row.name).color(name_col).monospace());
+
                                                 ui.vertical(|ui| {
                                                     ui.label(RichText::new(format!("{}/s", fmt_bytes(row.bw_bps as u64))).color(GREEN).small().monospace());
                                                     ui.add(
@@ -300,6 +476,8 @@ impl eframe::App for NetMonApp {
                                                             .fill(Color32::from_rgb(40, 160, 80)),
                                                     );
                                                 });
+
+
                                                 ui.vertical(|ui| {
                                                     ui.label(RichText::new(fmt_bytes(row.sent)).color(BLUE_OUT).small().monospace());
                                                     ui.label(RichText::new(fmt_bytes(row.recv)).color(ORG_IN).small().monospace());
@@ -311,53 +489,169 @@ impl eframe::App for NetMonApp {
                             });
                     }
 
-                    // Right: FR6 top remote hosts
+                    // Right: hosts tab OR connection detail tab 
                     {
                         let ui = &mut cols[1];
-                        section_header(ui, "TOP REMOTE HOSTS  (by volume)");
+
+                        // Tab bar
+                        ui.horizontal(|ui| {
+                            let hosts_sel = self.right_tab == RightTab::Hosts;
+                            let conn_sel  = self.right_tab == RightTab::Connections;
+ 
+                            if ui.add(egui::SelectableLabel::new(
+                                hosts_sel,
+                                RichText::new("TOP REMOTE HOSTS").color(if hosts_sel { CYAN } else { DIM }).small().strong(),
+                            )).clicked() {
+                                self.right_tab = RightTab::Hosts;
+                            }
+ 
+                            ui.label(RichText::new("|").color(DIM).small());
+ 
+                            let conn_label = if let Some(pid) = self.selected_pid {
+                                format!("CONNECTIONS  (pid {})", pid)
+                            } 
+                            else {
+                                "CONNECTIONS  (all)".to_string()
+                            };
+
+                            if ui.add(egui::SelectableLabel::new(
+                                conn_sel,
+                                RichText::new(&conn_label).color(if conn_sel { CYAN } else { DIM }).small().strong(),
+                            )).clicked() {
+                                self.right_tab = RightTab::Connections;
+                            }
+                        });
+
+
+                        ui.separator();
+                        ui.add_space(2.0);
+
+                        // section_header(ui, "TOP REMOTE HOSTS  (by volume)");
 
                         egui::ScrollArea::vertical()
-                            .id_source("hosts")
-                            .max_height(table_h)
+                            .id_source("right_panel")
+                            .max_height(table_h - 28.0)
                             .show(ui, |ui| {
-                                egui::Grid::new("hg")
-                                    .num_columns(4)
-                                    .spacing([6.0, 3.0])
-                                    .striped(true)
-                                    .show(ui, |ui| {
-                                        for h in &["#", "IP ADDRESS", "BYTES", "PKTS"] {
-                                            ui.label(RichText::new(*h).color(DIM).small().strong());
-                                        }
-                                        ui.end_row();
 
-                                        for (i, row) in snap.hosts.iter().enumerate() {
-                                            ui.label(RichText::new(format!("{}", i + 1)).color(DIM).small());
-                                            ui.label(RichText::new(&row.addr).color(YELLOW).monospace().small());
-                                            ui.vertical(|ui| {
-                                                ui.label(RichText::new(fmt_bytes(row.bytes)).color(YELLOW).small().monospace());
-                                                ui.add(
-                                                    egui::ProgressBar::new(row.frac)
-                                                        .desired_width(90.0)
-                                                        .fill(Color32::from_rgb(180, 140, 30)),
-                                                );
-                                            });
-                                            ui.label(RichText::new(row.packets.to_string()).color(DIM).small().monospace());
-                                            ui.end_row();
-                                        }
 
-                                        if snap.hosts.is_empty() {
-                                            ui.label(RichText::new("waiting for traffic…").color(DIM).small());
-                                            ui.end_row();
-                                        }
-                                    });
+                                match self.right_tab {
+                                    RightTab::Hosts => draw_hosts_table(ui, &snap.hosts),
+
+                                    RightTab::Connections => {
+                                        // FR9: use per-process list if selected, else global
+                                        let rows: &[ConnRow] = if self.selected_pid.is_some() {
+                                            &detail_conns
+                                        } else {
+                                            &snap.top_conns
+                                        };
+                                        draw_connections_table(ui, rows);
+                                    }
+
+                                }
                             });
+
                     }
                 });
+                    
             });
+        }
     }
-}
+
 
 //helpers
+fn draw_connections_table(ui: &mut egui::Ui, rows: &[ConnRow]) {
+    if rows.is_empty() {
+        ui.add_space(12.0);
+        ui.label(RichText::new("No connections recorded yet.").color(DIM).small());
+        return;
+    }
+ 
+    egui::Grid::new("cg")
+        .num_columns(8)
+        .spacing([6.0, 3.0])
+        .striped(true)
+        .show(ui, |ui| {
+            for h in &["PROTO", "PROCESS", "USER", "REMOTE", "PORT", "↑SENT", "↓RECV", "AGE"] {
+                ui.label(RichText::new(*h).color(DIM).small().strong());
+            }
+            ui.end_row();
+ 
+            for row in rows {
+                // Protocol badge with colour coding
+                let proto_col = match row.protocol.as_str() {
+                    "TCP" => CYAN,
+                    "UDP" => YELLOW,
+                    _     => DIM,
+                };
+
+                ui.label(RichText::new(&row.protocol).color(proto_col).small().monospace());
+ 
+                // Process name + PID
+                let proc_display = if row.pid > 0 {
+                    format!("{}\n({})", row.proc_name, row.pid)
+                } else {
+                    row.proc_name.clone()
+                };
+
+                ui.label(RichText::new(proc_display).color(GREEN).small().monospace());
+ 
+                ui.label(RichText::new(&row.username).color(DIM).small());
+ 
+                // Remote address
+                ui.label(RichText::new(&row.remote_addr).color(YELLOW).small().monospace());
+ 
+                // Ports: local → remote
+                ui.label(
+                    RichText::new(format!("{}→{}", row.local_port, row.remote_port))
+                        .color(DIM).small().monospace()
+                );
+ 
+                // sent/recv with direction colours
+                ui.label(RichText::new(fmt_bytes(row.bytes_sent)).color(BLUE_OUT).small().monospace());
+                ui.label(RichText::new(fmt_bytes(row.bytes_recv)).color(ORG_IN).small().monospace());
+ 
+                // Age: colour shifts red if stale (>10 s since last packet)
+                let age_col = if row.age_secs > 10 { RED_DIM } else { DIM };
+                ui.label(RichText::new(format!("{}s", row.age_secs)).color(age_col).small().monospace());
+ 
+                ui.end_row();
+            }
+        });
+}
+
+
+fn draw_hosts_table(ui: &mut egui::Ui, hosts: &[HostRow]) {
+    egui::Grid::new("hg")
+        .num_columns(4)
+        .spacing([6.0, 3.0])
+        .striped(true)
+        .show(ui, |ui| {
+            for h in &["#", "IP ADDRESS", "BYTES", "PKTS"] {
+                ui.label(RichText::new(*h).color(DIM).small().strong());
+            }
+            ui.end_row();
+ 
+            for (i, row) in hosts.iter().enumerate() {
+                ui.label(RichText::new(format!("{}", i + 1)).color(DIM).small());
+                ui.label(RichText::new(&row.addr).color(YELLOW).monospace().small());
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(fmt_bytes(row.bytes)).color(YELLOW).small().monospace());
+                    ui.add(
+                        egui::ProgressBar::new(row.frac)
+                            .desired_width(90.0)
+                            .fill(Color32::from_rgb(180, 140, 30)),
+                    );
+                });
+                ui.label(RichText::new(row.packets.to_string()).color(DIM).small().monospace());
+                ui.end_row();
+            }
+ 
+            if hosts.is_empty() {
+                ui.label(RichText::new("waiting for traffic…").color(DIM).small());
+                ui.end_row();
+            }
+        });
+}
 
 fn section_header(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
