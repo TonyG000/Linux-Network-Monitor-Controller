@@ -44,6 +44,7 @@ const BW_WINDOW_SECS: f64 = 5.0;
 #[derive(Clone, Debug)]
 pub struct ProcessStats {
     pub pid:           u32,
+    pub uid: u32,
     pub name:          String,
     pub username:      String,
     pub bytes_sent:    u64,
@@ -59,6 +60,7 @@ impl ProcessStats {
     fn new(info: &ProcessInfo) -> Self {
         ProcessStats {
             pid:           info.pid,
+            uid: info.uid,
             name:          info.name.clone(),
             username:      info.username.clone(),
             bytes_sent:    0,

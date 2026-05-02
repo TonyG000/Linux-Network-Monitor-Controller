@@ -13,6 +13,7 @@ use std::time::Instant;
 use eframe::egui::{self, Color32, RichText, Visuals};
 use egui_plot::{Line, Plot, PlotPoints};
 
+use crate::control::TrafficController;
 use crate::stats::{Aggregator, ConnectionRecord, PacketEvent};
 
 const GREEN:    Color32 = Color32::from_rgb(72,  199, 116);
@@ -27,6 +28,7 @@ const RED_DIM:  Color32 = Color32::from_rgb(200, 80,  60);
 
 struct ProcRow {
     pid:     u32,
+    uid: u32,
     name:    String,
     user:    String,
     bw_bps:  f64,
@@ -93,6 +95,7 @@ fn snapshot(agg: &Aggregator) -> Snapshot {
     let max_bw    = procs_raw.first().map(|p| p.bandwidth_bps).unwrap_or(1.0).max(1.0);
     let processes = procs_raw.iter().map(|p| ProcRow {
         pid:     p.pid,
+        uid: p.uid,
         name:    p.name.clone(),
         user:    p.username.clone(),
         bw_bps:  p.bandwidth_bps,
@@ -159,6 +162,7 @@ pub struct NetMonApp {
 
     selected_pid: Option<u32>,
     right_tab:    RightTab,
+    controller: Arc<Mutex<TrafficController>>,
 }
 
 impl NetMonApp {
@@ -167,6 +171,8 @@ impl NetMonApp {
         aggregator: Arc<Mutex<Aggregator>>,
         rx:         Receiver<PacketEvent>,
         iface:      String,
+        controller: Arc<Mutex<TrafficController>>,
+
     ) -> Self {
         let mut vis          = Visuals::dark();
         vis.panel_fill       = PANEL_BG;
@@ -188,6 +194,7 @@ impl NetMonApp {
             proc_perm_ok,
             selected_pid: None,
             right_tab: RightTab::Connections, 
+            controller,
         }
     }
 }
@@ -250,6 +257,19 @@ impl eframe::App for NetMonApp {
                     ui.label(RichText::new(format!("procs  {}", snap.active_procs)).color(CYAN));
                     ui.separator();
                     ui.label(RichText::new(format!("up  {}s", uptime)).color(DIM));
+                    
+                    let ctrl = self.controller.lock().unwrap();
+                    let blocked = ctrl.blocked_list();
+                    if !blocked.is_empty() {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("🚫 {} blocked", blocked.len()))
+                                .color(Color32::from_rgb(255, 100, 80))
+                                .small()
+                                .strong(),
+                        );
+                    }
+                    
                 });
                 ui.add_space(6.0);
             });
@@ -419,7 +439,7 @@ impl eframe::App for NetMonApp {
                                         .spacing([6.0, 3.0])
                                         .striped(true)
                                         .show(ui, |ui| {
-                                            for h in &["#", "PID", "PROCESS", "USER", "B/S", "↑SENT / ↓RECV"] {
+                                            for h in &["#", "PID", "PROCESS", "USER", "B/S", "↑SENT / ↓RECV", "ACTION"] {
                                                 ui.label(RichText::new(*h).color(DIM).small().strong());
                                             }
                                             ui.end_row();
@@ -427,6 +447,8 @@ impl eframe::App for NetMonApp {
                                             for (rank, row) in snap.processes.iter().enumerate() {
                                                 let is_sel  = self.selected_pid == Some(row.pid);
                                                 let name_col = if is_sel { YELLOW } else { rank_color(rank) };
+                                                let mut ctrl = self.controller.lock().unwrap();
+                                                let blocked  = ctrl.is_blocked(row.pid);
  
                                                 // clicking selects 
                                                 let r = ui.add(
@@ -482,6 +504,33 @@ impl eframe::App for NetMonApp {
                                                     ui.label(RichText::new(fmt_bytes(row.sent)).color(BLUE_OUT).small().monospace());
                                                     ui.label(RichText::new(fmt_bytes(row.recv)).color(ORG_IN).small().monospace());
                                                 });
+
+
+                                                let (label, color) = if blocked {
+                                                    ("UNBLOCK", Color32::from_rgb(255, 100, 80))
+                                                } 
+                                                else {
+                                                    ("BLOCK",   Color32::from_rgb(255, 196, 68))
+                                                };
+                                            
+                                                if ui.add(
+                                                    egui::Button::new(RichText::new(label).small().color(color))
+                                                        .min_size(egui::Vec2::new(60.0, 16.0))
+                                                ).clicked() {
+                                                    if blocked {
+                                                        if let Err(e) = ctrl.unblock(row.pid) {
+                                                            eprintln!("unblock failed: {e}");
+                                                        }
+                                                    } 
+                                                    else {
+                                                        // uid comes from the aggregator's ProcessStats — add uid field
+                                                        // to ProcRow (see note below) or look it up from /proc here
+                                                        if let Err(e) = ctrl.block(row.pid, row.uid, &row.name) {
+                                                            eprintln!("block failed: {e}");
+                                                        }
+                                                    }
+                                                }
+                                            
                                                 ui.end_row();
                                             }
                                         });

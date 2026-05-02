@@ -14,12 +14,14 @@
 // FR5  – statistics         (stats.rs)
 // FR6  – live dashboard     (gui.rs)
 // FR7  – process ranking    (gui.rs)
+// FR10 traffic control (control.rs)
 // FR14 – interface selector (this file)
 
 mod capture;
 mod process;
 mod stats;
 mod gui;
+mod control;
 
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
@@ -31,6 +33,7 @@ use capture::{CaptureEngine, Protocol};
 use process::find_process_with_direction;
 use stats::{Aggregator, PacketEvent};
 use gui::NetMonApp;
+use control::TrafficController;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -67,6 +70,7 @@ fn main() {
     // the excess rather than allowing unbounded memory growth.
     let (tx, rx)   = mpsc::sync_channel::<PacketEvent>(16_384);
     let aggregator = Arc::new(Mutex::new(Aggregator::default()));
+    let controller = Arc::new(Mutex::new(TrafficController::new()));
 
     // ── capture thread ────────────────────────────────────────────────────────
     thread::Builder::new()
@@ -101,13 +105,16 @@ fn main() {
 
     let agg_clone   = Arc::clone(&aggregator);
     let iface_clone = iface.clone();
+    let ctrl_clone = Arc::clone(&controller);
 
     eframe::run_native(
         "NetMonitor",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(NetMonApp::new(cc, agg_clone, rx, iface_clone)))
+            Ok(Box::new(NetMonApp::new(cc, agg_clone, rx, iface_clone, ctrl_clone)))
         }),
     )
     .unwrap_or_else(|e| eprintln!("GUI error: {e:?}"));
+
+    controller.lock().unwrap().unblock_all();
 }
