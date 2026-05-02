@@ -163,6 +163,7 @@ pub struct NetMonApp {
     selected_pid: Option<u32>,
     right_tab:    RightTab,
     controller: Arc<Mutex<TrafficController>>,
+    auto_follow: bool,
 }
 
 impl NetMonApp {
@@ -172,6 +173,7 @@ impl NetMonApp {
         rx:         Receiver<PacketEvent>,
         iface:      String,
         controller: Arc<Mutex<TrafficController>>,
+        
 
     ) -> Self {
         let mut vis          = Visuals::dark();
@@ -195,6 +197,7 @@ impl NetMonApp {
             selected_pid: None,
             right_tab: RightTab::Connections, 
             controller,
+            auto_follow: true,
         }
     }
 }
@@ -245,8 +248,8 @@ impl eframe::App for NetMonApp {
                     ui.label(RichText::new(format!("if: {}", self.iface)).color(CYAN).monospace());
                     ui.separator();
 
-                    ui.label(RichText::new(format!("▲ {}/s", fmt_bytes(snap.current_out_bps as u64))).color(BLUE_OUT).strong());
-                    ui.label(RichText::new("▼").color(ORG_IN));
+                    ui.label(RichText::new(format!("⬆️  {}/s", fmt_bytes(snap.current_out_bps as u64))).color(BLUE_OUT).strong());
+                    ui.label(RichText::new("⬇️").color(ORG_IN));
                     ui.label(RichText::new(format!("{}/s", fmt_bytes(snap.current_in_bps as u64))).color(ORG_IN).strong());
 
                     ui.separator();
@@ -279,7 +282,7 @@ impl eframe::App for NetMonApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    ui.label(RichText::new("● LIVE").color(GREEN).small());
+                    ui.label(RichText::new("LIVE").color(GREEN).small());
                     ui.label(RichText::new("  Ctrl+C in terminal to exit").color(DIM).small());
 
                     if self.selected_pid.is_some() {
@@ -298,7 +301,7 @@ impl eframe::App for NetMonApp {
 
                         ui.label(
                             RichText::new(format!(
-                                "peak ▲{}/s  ▼{}/s",
+                                "peak ⬆️ {}/s  ⬇️{}/s",
                                 fmt_bytes(peak_out),
                                 fmt_bytes(peak_in),
                             ))
@@ -318,34 +321,58 @@ impl eframe::App for NetMonApp {
             .frame(egui::Frame::none().fill(PANEL_BG).inner_margin(egui::Margin::same(10.0)))
             .show(ctx, |ui| {
                 
-                section_header(ui, "BANDWIDTH  (bytes / second)  ▲ outbound   ▼ inbound");
+                section_header(ui, "BANDWIDTH  (bytes / second)  ⬆️outbound   ⬇️inbound");
 
                 let pts_out = PlotPoints::new(snap.bw_history_out.clone());
                 let pts_in  = PlotPoints::new(snap.bw_history_in.clone());
 
-                Plot::new("bw")
+                let latest_x = snap.bw_history_out.last().map(|p| p[0]).unwrap_or(0.0);
+
+                // Recenter button shown when auto_follow is off
+                ui.horizontal(|ui| {
+                    if !self.auto_follow {
+                        if ui.button(
+                            RichText::new("⟳ Re-center").color(YELLOW).small().strong()
+                        ).clicked() {
+                            self.auto_follow = true;
+                        }
+                    } 
+                    else {
+                        ui.label(RichText::new("● LIVE").color(GREEN).small());
+                    }
+                });
+
+                if self.auto_follow {
+                    egui_plot::PlotMemory::load(ctx, egui::Id::new("bw"))
+                        .map(|mut mem| {
+                            mem.auto_bounds = egui::Vec2b::new(true, true);
+                            mem.store(ctx, egui::Id::new("bw"));
+                        });
+                }
+
+                let mut plot = Plot::new("bw")
                     .height(140.0)
                     .show_axes([true, true])
                     .x_axis_label("elapsed (s)")
                     .y_axis_label("bytes / s")
                     .include_y(0.0)
-                    .set_margin_fraction(egui::Vec2::new(0.0, 0.12))
-                    .show(ui, |pu| {
-                        pu.line(
-                            Line::new(pts_out)
-                                .color(BLUE_OUT)
-                                .width(1.8)
-                                .name("▲ Out B/s")
-                        );
+                    .set_margin_fraction(egui::Vec2::new(0.0, 0.12));
 
-                        pu.line(
-                            Line::new(pts_in)
-                                .color(ORG_IN)
-                                .width(1.8)
-                                .name("▼ In B/s")
-                                .fill(0.0),
-                        );
-                    });
+                // When re-centering, nuke the saved pan/zoom state completely
+                if self.auto_follow {
+                    plot = plot.reset();
+                }
+
+                let plot_response = plot.show(ui, |pu| {
+                    pu.line(Line::new(pts_out).color(BLUE_OUT).width(1.8).name("⬆️Out B/s"));
+                    pu.line(Line::new(pts_in).color(ORG_IN).width(1.8).name("⬇️In B/s").fill(0.0));
+                });
+
+                if plot_response.response.dragged()
+                    || (plot_response.response.hovered() && ui.input(|i| i.raw_scroll_delta.length() > 0.0))
+                {
+                    self.auto_follow = false;
+                }
 
                 let table_h = ui.available_height() - 8.0;
 
