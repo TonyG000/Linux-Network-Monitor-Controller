@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 pcap = "2.2"
+eframe = { version = "0.28", default-features = true}
+egui_plot = "0.28"
