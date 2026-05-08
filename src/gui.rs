@@ -1,5 +1,3 @@
-// gui.rs
-//
 // FR6 – Live dashboard: bandwidth plot, top-process panel, top-host panel.
 // FR7 – Process ranking sorted by bandwidth, with inline bandwidth bars.
 //

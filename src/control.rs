@@ -1,5 +1,4 @@
-/*control.rs
-
+/*
 FR10 : Traffic Control
   Block / unblock outbound traffic for a selected process using iptables.
 
@@ -10,16 +9,12 @@ How it works:
   that UID.  Removing the same rule unblocks the process.
 
 Important limitations:
-  • Blocking is per-UID, not per-PID.  If multiple processes share the
+  * Blocking is per-UID, not per-PID.  If multiple processes share the
     same UID they will all be blocked together.  This is a kernel
-    limitation — iptables has no stable per-PID match.
-  • Blocking is only on outbound traffic. Inbound packets arrive before they are assigned to a process 
+    limitation as iptables has no per-PID match.
+  * Blocking is only on outbound traffic. Inbound packets arrive before they are assigned to a process 
     and there is no reliable way to say "incoming packet X belongs to PID Y"
-  • iptables requires root.  The programme must already be running as
-    root (required anyway for libpcap capture).
-  • All active rules are removed when TrafficController is dropped, so
-    no orphaned DROP rules are left behind after the programme exits.*/
-
+*/
 
 use std::collections::HashMap;
 use std::process::Command;

@@ -1,22 +1,3 @@
-// stats.rs
-//
-// FR5 – Statistics aggregation
-//   • Bytes sent / received per process
-//   • Total NIC bandwidth over time (for the live plot)
-//   • Active connection / process count
-
-// FR8 : Traffic Direction
-//   * Bandwidth history tracks inbound and outbound separately
-
-// FR9 : Connection Detail View
-//   * ConnectionRecord stores per-connection metadata
-//   * Aggregator keeps a capped list of recent connections
-//
-// Architecture:
-//   The capture thread creates `PacketEvent` values and sends them over an
-//   mpsc channel.  The GUI thread drains that channel every repaint and calls
-//   `Aggregator::ingest` for each event.
-
 use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 use std::time::Instant;
@@ -24,7 +5,7 @@ use std::time::Instant;
 use crate::capture::{Packet, Protocol};
 use crate::process::ProcessInfo;
 
-// ─── packet event ─────────────────────────────────────────────────────────────
+//  packet event 
 
 /// Enriched packet produced by the capture thread.
 pub struct PacketEvent {
@@ -36,7 +17,7 @@ pub struct PacketEvent {
     // false = dst IP is the local side (packet is coming in)
 }
 
-// ─── per-process statistics ───────────────────────────────────────────────────
+//  per-process statistics 
 
 /// Sliding-window size for the per-process bandwidth estimate.
 const BW_WINDOW_SECS: f64 = 5.0;
@@ -90,7 +71,7 @@ impl ProcessStats {
     }
 }
 
-// ─── per-remote-host statistics ───────────────────────────────────────────────
+//  per-remote-host statistics 
 
 #[derive(Clone, Debug)]
 pub struct HostStats {
