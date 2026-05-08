@@ -16,6 +16,7 @@ mod process;
 mod stats;
 mod gui;
 mod control;
+mod logger;
 
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
@@ -28,6 +29,7 @@ use process::find_process_with_direction;
 use stats::{Aggregator, PacketEvent};
 use gui::App;
 use control::TrafficController;
+use logger::SessionLogger;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -65,6 +67,7 @@ fn main() {
     let (tx, rx)   = mpsc::sync_channel::<PacketEvent>(16_384);
     let aggregator = Arc::new(Mutex::new(Aggregator::default()));
     let controller = Arc::new(Mutex::new(TrafficController::new()));
+    let session_logger = Arc::new(Mutex::new(SessionLogger::new()));
 
     // ── capture thread ────────────────────────────────────────────────────────
     thread::Builder::new()
@@ -100,15 +103,24 @@ fn main() {
     let agg_clone   = Arc::clone(&aggregator);
     let iface_clone = iface.clone();
     let ctrl_clone = Arc::clone(&controller);
+    let logger_clone = Arc::clone(&session_logger);
 
     eframe::run_native(
         "Afashtak",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(App::new(cc, agg_clone, rx, iface_clone, ctrl_clone)))
+            Ok(Box::new(App::new(cc, agg_clone, rx, iface_clone, ctrl_clone, logger_clone,)))
         }),
     )
     .unwrap_or_else(|e| eprintln!("GUI error: {e:?}"));
 
     controller.lock().unwrap().unblock_all();
+
+     let logger = session_logger.lock().unwrap();
+    if !logger.connections.is_empty() {
+        eprintln!(
+            "Session ended. {} connection records in log (use Export in GUI before exit to save)",
+            logger.connections.len()
+        );
+    }
 }

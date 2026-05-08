@@ -8,6 +8,8 @@ use egui_plot::{Line, Plot, PlotPoints};
 use crate::control::TrafficController;
 use crate::stats::{Aggregator, ConnectionRecord, PacketEvent};
 
+use crate::logger::SessionLogger;
+
 const GREEN: Color32 = Color32::from_rgb(72,  199, 116);
 const CYAN: Color32 = Color32::from_rgb(80,  200, 200);
 const YELLOW: Color32 = Color32::from_rgb(255, 196, 68);
@@ -190,6 +192,23 @@ enum RightTab {
     Connections,
 }
 
+#[derive(Default)]
+struct ExportModal {
+    open: bool,
+    path_buf: String,       
+    format: ExportFormat,
+    status: Option<String>,
+    status_ok: bool,
+}
+ 
+#[derive(PartialEq, Clone, Copy, Default)]
+enum ExportFormat { #[default] Csv, Json }
+ 
+// Log viewer state
+#[derive(Default)]
+struct LogViewer {
+    open: bool,
+}
 
 pub struct App {
     aggregator: Arc<Mutex<Aggregator>>,
@@ -209,6 +228,11 @@ pub struct App {
     filter_proc: String,
     filter_user: String,
     filter_proto: Option<String>,
+
+    session_logger: Arc<Mutex<SessionLogger>>,
+    export_modal: ExportModal,
+    log_viewer: LogViewer,
+    snapshot_count: usize,
 }
 
 impl App {
@@ -218,6 +242,7 @@ impl App {
         rx: Receiver<PacketEvent>,
         iface: String,
         controller: Arc<Mutex<TrafficController>>,
+        session_logger: Arc<Mutex<SessionLogger>>,
         
 
     ) -> Self {
@@ -232,6 +257,11 @@ impl App {
         // /proc/1 (init/systemd) is always owned by root, so reading its fd/
         // dir is a reliable proxy for "do we have root/CAP_SYS_PTRACE?".
         let proc_perm_ok = std::fs::read_dir("/proc/1/fd").is_ok();
+
+        let export_modal = ExportModal {
+            path_buf: "./session.csv".to_string(),
+            ..Default::default()
+        };
 
         Self { 
             aggregator, 
@@ -249,8 +279,38 @@ impl App {
             filter_proc: String::new(),
             filter_user: String::new(),
             filter_proto: None,
+
+            session_logger,
+            export_modal,
+            log_viewer: LogViewer::default(),
+            snapshot_count: 0,
         }
     }
+
+
+
+    // Take a snapshot of current connections into the session log.
+    fn take_snapshot(&mut self) {
+        let agg = self.aggregator.lock().unwrap();
+        let records = agg.top_connections(1000);
+
+        let mut logger = self.session_logger.lock().unwrap();
+        logger.snapshot_connections(&records);
+        self.snapshot_count += 1;
+    }
+ 
+    // Sync summary stats into the logger before export.
+    fn sync_logger_summary(&self, snap: &Snapshot) {
+        let mut logger = self.session_logger.lock().unwrap();
+        logger.update_summary(
+            snap.total_bytes,
+            snap.total_packets,
+            snap.peak_out_bps,
+            snap.peak_in_bps,
+            &self.iface,
+        );
+    }
+
 }
 
 impl eframe::App for App {
@@ -281,6 +341,7 @@ impl eframe::App for App {
         };
 
         let uptime = self.start.elapsed().as_secs();
+        let log_count = self.session_logger.lock().unwrap().connections.len();
 
         // header bar
         egui::TopBottomPanel::top("hdr")
@@ -312,21 +373,69 @@ impl eframe::App for App {
                     ui.separator();
                     ui.label(RichText::new(format!("up  {}s", uptime)).color(DIM));
                     
+                    // let ctrl = self.controller.lock().unwrap();
+                    // let blocked = ctrl.blocked_list();
+                    // if !blocked.is_empty() {
+                    //     ui.separator();
+                    //     ui.label(
+                    //         RichText::new(format!("🚫 {} blocked", blocked.len()))
+                    //             .color(Color32::from_rgb(255, 100, 80))
+                    //             .small()
+                    //             .strong(),
+                    //     );
+                    // }
+
+                    let blocked_len = {
                     let ctrl = self.controller.lock().unwrap();
-                    let blocked = ctrl.blocked_list();
-                    if !blocked.is_empty() {
+                    ctrl.blocked_list().len()
+                    };
+
+                    if blocked_len > 0 {
                         ui.separator();
                         ui.label(
-                            RichText::new(format!("🚫 {} blocked", blocked.len()))
+                            RichText::new(format!("🚫 {} blocked", blocked_len))
                                 .color(Color32::from_rgb(255, 100, 80))
                                 .small()
                                 .strong(),
                         );
                     }
                     
-                });
-                ui.add_space(6.0);
-            });
+                    ui.add_space(6.0);
+
+                    let snap_label = format!("Snapshot ({})", self.snapshot_count);
+                    if ui.add(
+                        egui::Button::new(RichText::new(&snap_label).color(GREEN).small().strong())
+                            .fill(Color32::from_rgb(14, 38, 22))
+                    ).on_hover_text("Capture current connections into the session log").clicked() {
+                        self.take_snapshot();
+                    }
+
+                    ui.add_space(4.0);
+
+                    // Log viewer toggle
+                    let log_label = format!("Log ({})", log_count);
+                    let log_col   = if log_count > 0 { YELLOW } else { DIM };
+                    if ui.add(
+                        egui::Button::new(RichText::new(&log_label).color(log_col).small())
+                            .fill(Color32::from_rgb(30, 28, 14))
+                    ).on_hover_text("View session log entries").clicked() {
+                        self.log_viewer.open = !self.log_viewer.open;
+                    }
+
+                    ui.add_space(4.0);
+
+                    if ui.add(
+                        egui::Button::new(RichText::new("Export").color(CYAN).small())
+                            .fill(Color32::from_rgb(30, 28, 14))
+                    ).on_hover_text("Export session log to CSV or JSON").clicked() {
+                        self.export_modal.open = true;
+                    }
+
+                    });
+                
+            ui.add_space(6.0);
+
+        });
 
         egui::TopBottomPanel::bottom("status")
             .frame(egui::Frame::none().fill(Color32::from_rgb(10, 18, 12)))
@@ -341,6 +450,15 @@ impl eframe::App for App {
                         ui.label(
                             RichText::new("ESC or click header to deselect process")
                                 .color(YELLOW).small(),
+                        );
+                    }
+
+                    // Show log record count in status bar
+                    if log_count > 0 {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("{} log records -- {} snapshots", log_count, self.snapshot_count))
+                                .color(DIM).small(),
                         );
                     }
 
@@ -366,6 +484,37 @@ impl eframe::App for App {
         // ESC clears process selection (FR9)
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.selected_pid = None;
+        }
+
+
+        // Export modal window
+        if self.export_modal.open {
+            let mut open = true;
+            egui::Window::new("Export Session Log")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    draw_export_modal(ui, &mut self.export_modal, &self.session_logger, log_count);
+                });
+            if !open { self.export_modal.open = false; }
+        }
+ 
+        // Log viewer window
+        if self.log_viewer.open {
+            let mut open = true;
+            egui::Window::new(format!("Session Log — {} records", log_count))
+                .collapsible(true)
+                .resizable(true)
+                .default_width(820.0)
+                .default_height(400.0)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    draw_log_viewer(ui, &self.session_logger);
+                });
+            if !open { self.log_viewer.open = false; }
         }
 
         egui::CentralPanel::default()
@@ -1216,4 +1365,203 @@ fn apply_conn_filters<'a>(
         // protocol exact match, or None = show all
         && proto.as_deref().map_or(true, |p| r.protocol == p)
     }).collect()
+}
+
+
+fn draw_export_modal(
+    ui: &mut egui::Ui,
+    modal: &mut ExportModal,
+    logger: &Arc<Mutex<SessionLogger>>,
+    log_count: usize,
+) {
+    let has_data = log_count > 0;
+ 
+    egui::Frame::none()
+        .fill(CARD_BG)
+        .inner_margin(egui::Margin::same(12.0))
+        .rounding(egui::Rounding::same(6.0))
+        .show(ui, |ui| {
+            ui.label(RichText::new("SESSION LOG EXPORT").color(CYAN).strong());
+            ui.add_space(6.0);
+ 
+            // Record count
+            if has_data {
+                ui.label(
+                    RichText::new(format!("📋 {} connection records ready to export.", log_count))
+                        .color(GREEN).small(),
+                );
+            } else {
+                ui.label(
+                    RichText::new("⚠  No records in log yet. Press  ● Snapshot  first.")
+                        .color(YELLOW).small(),
+                );
+            }
+ 
+            ui.add_space(8.0);
+ 
+            // Format selector
+            ui.label(RichText::new("Format").color(DIM).small());
+            ui.horizontal(|ui| {
+                if ui.add(egui::SelectableLabel::new(
+                    modal.format == ExportFormat::Csv,
+                    RichText::new("CSV").color(if modal.format == ExportFormat::Csv { CYAN } else { DIM }).monospace(),
+                )).clicked() {
+                    modal.format = ExportFormat::Csv;
+                    // update extension in path
+                    if let Some(s) = modal.path_buf.strip_suffix(".json") {
+                        modal.path_buf = format!("{}.csv", s);
+                    }
+                }
+                if ui.add(egui::SelectableLabel::new(
+                    modal.format == ExportFormat::Json,
+                    RichText::new("JSON").color(if modal.format == ExportFormat::Json { CYAN } else { DIM }).monospace(),
+                )).clicked() {
+                    modal.format = ExportFormat::Json;
+                    if let Some(s) = modal.path_buf.strip_suffix(".csv") {
+                        modal.path_buf = format!("{}.json", s);
+                    }
+                }
+            });
+ 
+            ui.add_space(6.0);
+ 
+            // Path input
+            ui.label(RichText::new("Output path").color(DIM).small());
+            ui.add(
+                egui::TextEdit::singleline(&mut modal.path_buf)
+                    .desired_width(380.0)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("./peeknet_session.csv"),
+            );
+ 
+            ui.add_space(8.0);
+ 
+            ui.horizontal(|ui| {
+                // Export button
+                let export_btn = ui.add_enabled(
+                    has_data && !modal.path_buf.trim().is_empty(),
+                    egui::Button::new(RichText::new("Export").color(Color32::BLACK).strong())
+                        .fill(GREEN),
+                );
+ 
+                if export_btn.clicked() {
+                    let path = std::path::Path::new(modal.path_buf.trim());
+                    let lg   = logger.lock().unwrap();
+                    let result = match modal.format {
+                        ExportFormat::Csv  => lg.export_csv(path),
+                        ExportFormat::Json => lg.export_json(path),
+                    };
+                    match result {
+                        Ok(()) => {
+                            modal.status    = Some(format!("✓ Exported to {}", path.display()));
+                            modal.status_ok = true;
+                        }
+                        Err(e) => {
+                            modal.status    = Some(format!("✗ Error: {e}"));
+                            modal.status_ok = false;
+                        }
+                    }
+                }
+ 
+                ui.add_space(8.0);
+ 
+                // Clear log button
+                if ui.add_enabled(
+                    has_data,
+                    egui::Button::new(RichText::new("Clear log").color(RED_DIM).small())
+                ).clicked() {
+                    logger.lock().unwrap().clear();
+                    modal.status    = Some("Log cleared.".to_string());
+                    modal.status_ok = true;
+                }
+            });
+ 
+            // Status line
+            if let Some(ref msg) = modal.status {
+                ui.add_space(6.0);
+                let col = if modal.status_ok { GREEN } else { RED_DIM };
+                ui.label(RichText::new(msg).color(col).small().monospace());
+            }
+        });
+}
+ 
+// Log viewer window
+ 
+fn draw_log_viewer(ui: &mut egui::Ui, logger: &Arc<Mutex<SessionLogger>>) {
+    let lg = logger.lock().unwrap();
+ 
+    if lg.connections.is_empty() {
+        ui.add_space(12.0);
+        ui.label(RichText::new("No records yet. press Snapshot  in the header bar.").color(DIM));
+        return;
+    }
+ 
+    // Summary bar at top of viewer
+    if let Some(ref s) = lg.summary {
+        egui::Frame::none()
+            .fill(Color32::from_rgb(16, 22, 30))
+            .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+            .rounding(egui::Rounding::same(4.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("if: {}", s.iface)).color(CYAN).small().monospace());
+                    ui.separator();
+                    ui.label(RichText::new(format!("duration: {}s", s.duration_secs)).color(DIM).small());
+                    ui.separator();
+                    ui.label(RichText::new(format!("total: {}", fmt_bytes(s.total_bytes))).color(YELLOW).small());
+                    ui.separator();
+                    ui.label(RichText::new(format!("pkts: {}", s.total_packets)).color(DIM).small());
+                    ui.separator();
+                    ui.label(RichText::new(format!("peak ⬆ {}/s", fmt_bytes(s.peak_out_bps as u64))).color(BLUE_OUT).small());
+                    ui.label(RichText::new(format!("⬇ {}/s", fmt_bytes(s.peak_in_bps as u64))).color(ORG_IN).small());
+                });
+            });
+        ui.add_space(4.0);
+    }
+ 
+    egui::ScrollArea::vertical()
+        .max_height(340.0)
+        .show(ui, |ui| {
+            egui::Grid::new("log_grid")
+                .num_columns(9)
+                .spacing([6.0, 3.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    for h in &["TIME", "PROCESS", "PID", "USER", "PROTO", "REMOTE", "PORT", "↑SENT", "↓RECV"] {
+                        ui.label(RichText::new(*h).color(DIM).small().strong());
+                    }
+                    ui.end_row();
+ 
+                    for c in lg.connections.iter() {
+                        // Format unix timestamp as HH:MM:SS
+                        let ts = format_unix_time(c.timestamp);
+                        ui.label(RichText::new(&ts).color(DIM).small().monospace());
+ 
+                        ui.label(RichText::new(&c.proc_name).color(GREEN).small().monospace());
+                        ui.label(RichText::new(c.pid.to_string()).color(DIM).small().monospace());
+                        ui.label(RichText::new(&c.username).color(DIM).small());
+ 
+                        let proto_col = match c.protocol.as_str() {
+                            "TCP" => CYAN,
+                            "UDP" => YELLOW,
+                            _ => DIM,
+                        };
+                        ui.label(RichText::new(&c.protocol).color(proto_col).small().monospace());
+                        ui.label(RichText::new(&c.remote_addr).color(YELLOW).small().monospace());
+                        ui.label(RichText::new(format!(":{}", c.remote_port)).color(DIM).small().monospace());
+                        ui.label(RichText::new(fmt_bytes(c.bytes_sent)).color(BLUE_OUT).small().monospace());
+                        ui.label(RichText::new(fmt_bytes(c.bytes_recv)).color(ORG_IN).small().monospace());
+                        ui.end_row();
+                    }
+                });
+        });
+}
+ 
+// Format a unix timestamp as a simple HH:MM:SS string
+fn format_unix_time(unix: u64) -> String {
+    let secs_in_day = unix % 86400;
+    let h = secs_in_day / 3600;
+    let m = (secs_in_day % 3600) / 60;
+    let s = secs_in_day % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
 }
