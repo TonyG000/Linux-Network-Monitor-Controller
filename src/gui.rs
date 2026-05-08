@@ -8,15 +8,15 @@ use egui_plot::{Line, Plot, PlotPoints};
 use crate::control::TrafficController;
 use crate::stats::{Aggregator, ConnectionRecord, PacketEvent};
 
-const GREEN:    Color32 = Color32::from_rgb(72,  199, 116);
-const CYAN:     Color32 = Color32::from_rgb(80,  200, 200);
-const YELLOW:   Color32 = Color32::from_rgb(255, 196, 68);
+const GREEN: Color32 = Color32::from_rgb(72,  199, 116);
+const CYAN: Color32 = Color32::from_rgb(80,  200, 200);
+const YELLOW: Color32 = Color32::from_rgb(255, 196, 68);
 const BLUE_OUT: Color32 = Color32::from_rgb(100, 180, 255);
-const ORG_IN:   Color32 = Color32::from_rgb(255, 155, 80);
-const DIM:      Color32 = Color32::from_rgb(110, 110, 120);
+const ORG_IN: Color32 = Color32::from_rgb(255, 155, 80);
+const DIM: Color32 = Color32::from_rgb(110, 110, 120);
 const PANEL_BG: Color32 = Color32::from_rgb(16,  18,  24);
-const CARD_BG:  Color32 = Color32::from_rgb(22,  25,  33);
-const RED_DIM:  Color32 = Color32::from_rgb(200, 80,  60);
+const CARD_BG: Color32 = Color32::from_rgb(22,  25,  33);
+const RED_DIM: Color32 = Color32::from_rgb(200, 80,  60);
 
 const DONUT_COLORS: &[Color32] = &[
     Color32::from_rgb(100, 136, 221), // blue
@@ -30,21 +30,21 @@ const DONUT_COLORS: &[Color32] = &[
 ];
 
 struct ProcRow {
-    pid:     u32,
+    pid: u32,
     uid: u32,
-    name:    String,
-    user:    String,
-    bw_bps:  f64,
-    sent:    u64,
-    recv:    u64,
+    name: String,
+    user: String,
+    bw_bps: f64,
+    sent: u64,
+    recv: u64,
     bw_frac: f32,
 }
 
 struct HostRow {
-    addr:    String,
-    bytes:   u64,
+    addr: String,
+    bytes: u64,
     packets: u64,
-    frac:    f32, 
+    frac: f32, 
 }
 
 
@@ -64,12 +64,12 @@ struct ConnRow {
 }
 
 struct Snapshot {
-    total_bytes:   u64,
+    total_bytes: u64,
     total_packets: u64,
-    current_bps:   f64,
+    current_bps: f64,
     current_out_bps: f64,
     current_in_bps: f64,
-    active_procs:  usize,
+    active_procs: usize,
     bw_history_out: Vec<[f64; 2]>,
     bw_history_in: Vec<[f64; 2]>,
     processes: Vec<ProcRow>,
@@ -104,23 +104,23 @@ fn snapshot(agg: &Aggregator) -> Snapshot {
     let procs_raw = agg.top_processes_by_bandwidth(20);
     let max_bw    = procs_raw.first().map(|p| p.bandwidth_bps).unwrap_or(1.0).max(1.0);
     let processes = procs_raw.iter().map(|p| ProcRow {
-        pid:     p.pid,
+        pid: p.pid,
         uid: p.uid,
-        name:    p.name.clone(),
-        user:    p.username.clone(),
-        bw_bps:  p.bandwidth_bps,
-        sent:    p.bytes_sent,
-        recv:    p.bytes_recv,
+        name: p.name.clone(),
+        user: p.username.clone(),
+        bw_bps: p.bandwidth_bps,
+        sent: p.bytes_sent,
+        recv: p.bytes_recv,
         bw_frac: (p.bandwidth_bps / max_bw).clamp(0.0, 1.0) as f32,
     }).collect();
 
     let hosts_raw = agg.top_hosts_by_bytes(20);
     let max_bytes = hosts_raw.first().map(|h| h.bytes).unwrap_or(1).max(1);
     let hosts = hosts_raw.iter().map(|h| HostRow {
-        addr:    h.addr.clone(),
-        bytes:   h.bytes,
+        addr: h.addr.clone(),
+        bytes: h.bytes,
         packets: h.packet_count,
-        frac:    (h.bytes as f32 / max_bytes as f32).clamp(0.0, 1.0),
+        frac: (h.bytes as f32 / max_bytes as f32).clamp(0.0, 1.0),
     }).collect();
 
 
@@ -155,12 +155,12 @@ fn snapshot(agg: &Aggregator) -> Snapshot {
         .map(|c| c.bytes_sent + c.bytes_recv).sum();
 
     Snapshot {
-        total_bytes:   agg.total_bytes,
+        total_bytes: agg.total_bytes,
         total_packets: agg.total_packets,
-        current_bps:   agg.current_bps,
+        current_bps: agg.current_bps,
         current_out_bps: agg.current_out_bps,
         current_in_bps: agg.current_in_bps,
-        active_procs:  agg.active_process_count(),
+        active_procs: agg.active_process_count(),
         bw_history_out,
         bw_history_in,
         processes,
@@ -191,7 +191,7 @@ enum RightTab {
 }
 
 
-pub struct NetMonApp {
+pub struct App {
     aggregator: Arc<Mutex<Aggregator>>,
     rx: Receiver<PacketEvent>,
     iface: String,
@@ -206,24 +206,24 @@ pub struct NetMonApp {
 
     left_tab: LeftTab,
 
-    filter_proc:  String,
-    filter_user:  String,
+    filter_proc: String,
+    filter_user: String,
     filter_proto: Option<String>,
 }
 
-impl NetMonApp {
+impl App {
     pub fn new(
-        cc:         &eframe::CreationContext<'_>,
+        cc: &eframe::CreationContext<'_>,
         aggregator: Arc<Mutex<Aggregator>>,
-        rx:         Receiver<PacketEvent>,
-        iface:      String,
+        rx: Receiver<PacketEvent>,
+        iface: String,
         controller: Arc<Mutex<TrafficController>>,
         
 
     ) -> Self {
-        let mut vis          = Visuals::dark();
-        vis.panel_fill       = PANEL_BG;
-        vis.window_fill      = CARD_BG;
+        let mut vis = Visuals::dark();
+        vis.panel_fill = PANEL_BG;
+        vis.window_fill = CARD_BG;
         vis.extreme_bg_color = Color32::from_rgb(10, 11, 15);
         vis.widgets.noninteractive.bg_fill = CARD_BG;
         cc.egui_ctx.set_visuals(vis);
@@ -246,14 +246,14 @@ impl NetMonApp {
 
             left_tab:  LeftTab::Summary,
 
-            filter_proc:  String::new(),
-            filter_user:  String::new(),
+            filter_proc: String::new(),
+            filter_user: String::new(),
             filter_proto: None,
         }
     }
 }
 
-impl eframe::App for NetMonApp {
+impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // drain channel (cap at 8 k to stay responsive)
         {
@@ -290,7 +290,7 @@ impl eframe::App for NetMonApp {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new("NETMONITOR")
+                        RichText::new("AFASHTAK")
                             .strong()
                             .color(GREEN)
                             .size(17.0),
@@ -969,7 +969,7 @@ fn draw_processes(
                 ui.add_space(6.0);
                 ui.label(RichText::new("Fix — restart as root:").color(DIM).small());
                 ui.add_space(2.0);
-                ui.label(RichText::new(format!("  sudo ./netmonitor {iface}")).color(GREEN).monospace());
+                ui.label(RichText::new(format!("  sudo ./afashtak {iface}")).color(GREEN).monospace());
             });
         } else {
             ui.label(RichText::new("Waiting for resolvable traffic…").color(DIM));

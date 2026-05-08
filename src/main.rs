@@ -26,7 +26,7 @@ use eframe::egui;
 use capture::{CaptureEngine, Protocol};
 use process::find_process_with_direction;
 use stats::{Aggregator, PacketEvent};
-use gui::NetMonApp;
+use gui::App;
 use control::TrafficController;
 
 fn main() {
@@ -36,7 +36,7 @@ fn main() {
     let iface = match args.get(1) {
         Some(i) => i.clone(),
         None => {
-            eprintln!("Usage: netmonitor <interface>\n");
+            eprintln!("Usage: afashtak <interface>\n");
             eprintln!("Available interfaces:");
             match CaptureEngine::list_interfaces() {
                 Ok(list) => list.iter().for_each(|i| eprintln!("  {i}")),
@@ -91,7 +91,7 @@ fn main() {
     // ── GUI (must run on the main thread) ─────────────────────────────────────
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("NetMonitor — Live Dashboard")
+            .with_title("AFASHTAK: Linux Network Monitor and Controller")
             .with_inner_size([1_260.0, 760.0])
             .with_min_inner_size([900.0, 500.0]),
         ..Default::default()
@@ -102,10 +102,10 @@ fn main() {
     let ctrl_clone = Arc::clone(&controller);
 
     eframe::run_native(
-        "NetMonitor",
+        "Afashtak",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(NetMonApp::new(cc, agg_clone, rx, iface_clone, ctrl_clone)))
+            Ok(Box::new(App::new(cc, agg_clone, rx, iface_clone, ctrl_clone)))
         }),
     )
     .unwrap_or_else(|e| eprintln!("GUI error: {e:?}"));
