@@ -192,19 +192,23 @@ enum RightTab {
 
 
 pub struct NetMonApp {
-    aggregator:    Arc<Mutex<Aggregator>>,
-    rx:            Receiver<PacketEvent>,
-    iface:         String,
-    start:         Instant,
+    aggregator: Arc<Mutex<Aggregator>>,
+    rx: Receiver<PacketEvent>,
+    iface: String,
+    start: Instant,
 
-    proc_perm_ok:  bool,
+    proc_perm_ok: bool,
 
     selected_pid: Option<u32>,
-    right_tab:    RightTab,
+    right_tab: RightTab,
     controller: Arc<Mutex<TrafficController>>,
     auto_follow: bool,
 
-    left_tab: LeftTab
+    left_tab: LeftTab,
+
+    filter_proc:  String,
+    filter_user:  String,
+    filter_proto: Option<String>,
 }
 
 impl NetMonApp {
@@ -241,6 +245,10 @@ impl NetMonApp {
             auto_follow: true,
 
             left_tab:  LeftTab::Summary,
+
+            filter_proc:  String::new(),
+            filter_user:  String::new(),
+            filter_proto: None,
         }
     }
 }
@@ -520,19 +528,120 @@ impl eframe::App for NetMonApp {
                             ui.separator();
                             ui.add_space(2.0);
 
+                            ui.separator();
+                            ui.add_space(2.0);
+
+                            // Filter bar for the Connections tab
+                            if self.right_tab == RightTab::Connections {
+                                egui::Frame::none()
+                                    .fill(Color32::from_rgb(18, 20, 28))
+                                    .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                                    .rounding(egui::Rounding::same(4.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            //  Process filter 
+                                            ui.label(RichText::new("proc").color(DIM).small());
+                                            let pe = egui::TextEdit::singleline(&mut self.filter_proc)
+                                                .desired_width(90.0)
+                                                .hint_text("filter…")
+                                                .font(egui::TextStyle::Monospace);
+                                            ui.add(pe);
+
+                                            ui.add_space(6.0);
+
+                                            //  User filter 
+                                            ui.label(RichText::new("user").color(DIM).small());
+                                            let ue = egui::TextEdit::singleline(&mut self.filter_user)
+                                                .desired_width(80.0)
+                                                .hint_text("filter…")
+                                                .font(egui::TextStyle::Monospace);
+                                            ui.add(ue);
+
+                                            ui.add_space(6.0);
+
+                                            //  Protocol toggle buttons 
+                                            for proto in &["ALL", "TCP", "UDP"] {
+                                                let active = match *proto {
+                                                    "ALL" => self.filter_proto.is_none(),
+                                                    p     => self.filter_proto.as_deref() == Some(p),
+                                                };
+                                                let col = if active { CYAN } else { DIM };
+                                                if ui.add(
+                                                    egui::SelectableLabel::new(
+                                                        active,
+                                                        RichText::new(*proto).color(col).small().strong(),
+                                                    )
+                                                ).clicked() {
+                                                    self.filter_proto = match *proto {
+                                                        "ALL" => None,
+                                                        p     => Some(p.to_string()),
+                                                    };
+                                                }
+                                            }
+
+                                            //  Clear button (only when a filter is active) 
+                                            let any_active = !self.filter_proc.is_empty()
+                                                || !self.filter_user.is_empty()
+                                                || self.filter_proto.is_some();
+
+                                            if any_active {
+                                                ui.add_space(4.0);
+                                                if ui.add(
+                                                    egui::Button::new(
+                                                        RichText::new("✕ clear").color(RED_DIM).small()
+                                                    ).frame(false)
+                                                ).clicked() {
+                                                    self.filter_proc.clear();
+                                                    self.filter_user.clear();
+                                                    self.filter_proto = None;
+                                                }
+                                            }
+                                        });
+                                    });
+
+                                ui.add_space(3.0);
+                            }
+
                             egui::ScrollArea::vertical()
                                 .id_source("right_panel")
                                 .max_height(table_h - 28.0)
                                 .show(ui, |ui| {
                                     match self.right_tab {
                                         RightTab::Hosts => draw_hosts_table(ui, &snap.hosts),
+
                                         RightTab::Connections => {
-                                            let rows: &[ConnRow] = if self.selected_pid.is_some() {
+                                            // pick raw slice (per-pid or global)
+                                            let raw: &[ConnRow] = if self.selected_pid.is_some() {
                                                 &detail_conns
                                             } else {
                                                 &snap.top_conns
                                             };
-                                            draw_connections_table(ui, rows);
+
+                                            // apply filters
+                                            let filtered = apply_conn_filters(
+                                                raw,
+                                                &self.filter_proc.clone(),
+                                                &self.filter_user.clone(),
+                                                &self.filter_proto.clone(),
+                                            );
+
+                                            // show match count when a filter is active
+                                            let any_active = !self.filter_proc.is_empty()
+                                                || !self.filter_user.is_empty()
+                                                || self.filter_proto.is_some();
+
+                                            if any_active {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{} / {} connections",
+                                                        filtered.len(), raw.len()
+                                                    ))
+                                                    .color(DIM).small(),
+                                                );
+                                                ui.add_space(2.0);
+                                            }
+
+                                            draw_connections_table(ui, &filtered);
                                         }
                                     }
                                 });
@@ -959,10 +1068,10 @@ fn draw_processes(
 }
 
 
-fn draw_connections_table(ui: &mut egui::Ui, rows: &[ConnRow]) {
+fn draw_connections_table(ui: &mut egui::Ui, rows: &[&ConnRow]) {
     if rows.is_empty() {
         ui.add_space(12.0);
-        ui.label(RichText::new("No connections recorded yet.").color(DIM).small());
+        ui.label(RichText::new("No connections match.").color(DIM).small());
         return;
     }
  
@@ -981,7 +1090,7 @@ fn draw_connections_table(ui: &mut egui::Ui, rows: &[ConnRow]) {
                 let proto_col = match row.protocol.as_str() {
                     "TCP" => CYAN,
                     "UDP" => YELLOW,
-                    _     => DIM,
+                    _ => DIM,
                 };
 
                 ui.label(RichText::new(&row.protocol).color(proto_col).small().monospace());
@@ -1087,4 +1196,24 @@ fn truncate(s: &str, max_chars: usize) -> String {
     } else {
         format!("{}…", &s[..s.char_indices().nth(max_chars - 1).map(|(i,_)| i).unwrap_or(s.len())])
     }
+}
+
+// for filtration
+fn apply_conn_filters<'a>(
+    rows:   &'a [ConnRow],
+    proc:   &str,
+    user:   &str,
+    proto:  &Option<String>,
+) -> Vec<&'a ConnRow> {
+    let proc_lc  = proc.to_lowercase();
+    let user_lc  = user.to_lowercase();
+
+    rows.iter().filter(|r| {
+        // process name substring match (case-insensitive)
+        (proc_lc.is_empty()  || r.proc_name.to_lowercase().contains(&proc_lc))
+        // user substring match (case-insensitive)
+        && (user_lc.is_empty() || r.username.to_lowercase().contains(&user_lc))
+        // protocol exact match, or None = show all
+        && proto.as_deref().map_or(true, |p| r.protocol == p)
+    }).collect()
 }

@@ -1,17 +1,15 @@
-// Entry point.  Wires the three layers together:
-
 //Implemented FRs:
-// FR1  – real-time capture  (capture.rs)
-// FR2  – header extraction  (capture.rs)
-// FR3  – process resolution (process.rs)
-// FR4  – user resolution    (process.rs)
-// FR5  – statistics         (stats.rs)
-// FR6  – live dashboard     (gui.rs)
-// FR7  – process ranking    (gui.rs)
+// FR1 : real-time capture  (capture.rs)
+// FR2 : header extraction  (capture.rs)
+// FR3 : process resolution (process.rs)
+// FR4 : user resolution    (process.rs)
+// FR5 : statistics         (stats.rs)
+// FR6 : live dashboard     (gui.rs)
+// FR7 : process ranking    (gui.rs)
 // FR8 traffic direction
 // FR9 per connection details
 // FR10 traffic control (control.rs)
-// FR14 – interface selector
+// FR14: interface selector
 
 mod capture;
 mod process;
