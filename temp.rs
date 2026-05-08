@@ -1,3 +1,10 @@
+
+// FR6 – Live dashboard: bandwidth plot, top-process panel, top-host panel.
+// FR7 – Process ranking sorted by bandwidth, with inline bandwidth bars.
+//
+// FR8 Traffic direction: bandwidth line split into outbound / inbound.
+// FR9 Connection detail view: click a process row to inspect its connections.
+
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
@@ -18,6 +25,7 @@ const PANEL_BG: Color32 = Color32::from_rgb(16,  18,  24);
 const CARD_BG:  Color32 = Color32::from_rgb(22,  25,  33);
 const RED_DIM:  Color32 = Color32::from_rgb(200, 80,  60);
 
+// Donut chart colours (one per rank slot; wraps if > 8 processes)
 const DONUT_COLORS: &[Color32] = &[
     Color32::from_rgb(100, 136, 221), // blue
     Color32::from_rgb(72,  199, 116), // green
@@ -47,8 +55,6 @@ struct HostRow {
     frac:    f32, 
 }
 
-
-//one connection for the detail panel.
 struct ConnRow {
     pid: u32,
     proc_name: String,
@@ -64,24 +70,24 @@ struct ConnRow {
 }
 
 struct Snapshot {
-    total_bytes:   u64,
+    total_bytes: u64,
     total_packets: u64,
-    current_bps:   f64,
+    current_bps: f64,
     current_out_bps: f64,
     current_in_bps: f64,
-    active_procs:  usize,
+    active_procs: usize,
     bw_history_out: Vec<[f64; 2]>,
     bw_history_in: Vec<[f64; 2]>,
     processes: Vec<ProcRow>,
     hosts: Vec<HostRow>,
     top_conns: Vec<ConnRow>,
-
-    peak_out_bps: f64,
-    peak_in_bps: f64,
-    total_sent: u64,
-    total_recv: u64,
-    tcp_bytes: u64,
-    udp_bytes: u64,
+    // summary extras
+    peak_out_bps:    f64,
+    peak_in_bps:     f64,
+    total_sent:      u64,
+    total_recv:      u64,
+    tcp_bytes:       u64,
+    udp_bytes:       u64,
 }
 
 fn conn_row_from(r: &ConnectionRecord) -> ConnRow {
@@ -105,7 +111,7 @@ fn snapshot(agg: &Aggregator) -> Snapshot {
     let max_bw    = procs_raw.first().map(|p| p.bandwidth_bps).unwrap_or(1.0).max(1.0);
     let processes = procs_raw.iter().map(|p| ProcRow {
         pid:     p.pid,
-        uid: p.uid,
+        uid:     p.uid,
         name:    p.name.clone(),
         user:    p.username.clone(),
         bw_bps:  p.bandwidth_bps,
@@ -123,34 +129,25 @@ fn snapshot(agg: &Aggregator) -> Snapshot {
         frac:    (h.bytes as f32 / max_bytes as f32).clamp(0.0, 1.0),
     }).collect();
 
-
-    //split history into two separate point sets for the two plot lines
     let bw_history_out: Vec<[f64; 2]> = agg.bandwidth_history.iter()
         .map(|s| [s[0], s[1]]).collect();
-    
     let bw_history_in: Vec<[f64; 2]>  = agg.bandwidth_history.iter()
         .map(|s| [s[0], s[2]]).collect();
 
     let peak_out_bps = bw_history_out.iter().map(|p| p[1]).fold(0.0_f64, f64::max);
-
     let peak_in_bps  = bw_history_in.iter().map(|p| p[1]).fold(0.0_f64, f64::max);
- 
-    //global top-connections snapshot
-    let top_conns = agg.top_connections(50)
-        .iter()
-        .map(|r| conn_row_from(r))
-        .collect();
 
-    // totals for sent/recv
+    let top_conns = agg.top_connections(50)
+        .iter().map(|r| conn_row_from(r)).collect();
+
+    // per-process totals for sent/recv and protocol split
     let total_sent: u64 = procs_raw.iter().map(|p| p.bytes_sent).sum();
     let total_recv: u64 = procs_raw.iter().map(|p| p.bytes_recv).sum();
 
-    // by protocol
+    // protocol split from connection records
     let all_conns = agg.top_connections(1000);
-
     let tcp_bytes: u64 = all_conns.iter().filter(|c| c.protocol == "TCP")
         .map(|c| c.bytes_sent + c.bytes_recv).sum();
-
     let udp_bytes: u64 = all_conns.iter().filter(|c| c.protocol == "UDP")
         .map(|c| c.bytes_sent + c.bytes_recv).sum();
 
@@ -159,14 +156,13 @@ fn snapshot(agg: &Aggregator) -> Snapshot {
         total_packets: agg.total_packets,
         current_bps:   agg.current_bps,
         current_out_bps: agg.current_out_bps,
-        current_in_bps: agg.current_in_bps,
+        current_in_bps:  agg.current_in_bps,
         active_procs:  agg.active_process_count(),
         bw_history_out,
         bw_history_in,
         processes,
         hosts,
         top_conns,
-
         peak_out_bps,
         peak_in_bps,
         total_sent,
@@ -176,13 +172,11 @@ fn snapshot(agg: &Aggregator) -> Snapshot {
     }
 }
 
-
 #[derive(PartialEq, Clone, Copy)]
 enum LeftTab {
     Summary,
     Processes,
 }
-
 
 #[derive(PartialEq, Clone, Copy)]
 enum RightTab {
@@ -190,21 +184,17 @@ enum RightTab {
     Connections,
 }
 
-
 pub struct NetMonApp {
-    aggregator:    Arc<Mutex<Aggregator>>,
-    rx:            Receiver<PacketEvent>,
-    iface:         String,
-    start:         Instant,
-
-    proc_perm_ok:  bool,
-
+    aggregator:   Arc<Mutex<Aggregator>>,
+    rx:           Receiver<PacketEvent>,
+    iface:        String,
+    start:        Instant,
+    proc_perm_ok: bool,
     selected_pid: Option<u32>,
+    left_tab:     LeftTab,
     right_tab:    RightTab,
-    controller: Arc<Mutex<TrafficController>>,
-    auto_follow: bool,
-
-    left_tab: LeftTab
+    controller:   Arc<Mutex<TrafficController>>,
+    auto_follow:  bool,
 }
 
 impl NetMonApp {
@@ -214,8 +204,6 @@ impl NetMonApp {
         rx:         Receiver<PacketEvent>,
         iface:      String,
         controller: Arc<Mutex<TrafficController>>,
-        
-
     ) -> Self {
         let mut vis          = Visuals::dark();
         vis.panel_fill       = PANEL_BG;
@@ -224,77 +212,60 @@ impl NetMonApp {
         vis.widgets.noninteractive.bg_fill = CARD_BG;
         cc.egui_ctx.set_visuals(vis);
 
-        // Check whether we can read other processes' fd directories.
-        // /proc/1 (init/systemd) is always owned by root, so reading its fd/
-        // dir is a reliable proxy for "do we have root/CAP_SYS_PTRACE?".
         let proc_perm_ok = std::fs::read_dir("/proc/1/fd").is_ok();
 
-        Self { 
-            aggregator, 
-            rx, 
-            iface, 
-            start: Instant::now(), 
+        Self {
+            aggregator,
+            rx,
+            iface,
+            start: Instant::now(),
             proc_perm_ok,
             selected_pid: None,
-            right_tab: RightTab::Connections, 
+            left_tab:  LeftTab::Summary,
+            right_tab: RightTab::Connections,
             controller,
             auto_follow: true,
-
-            left_tab:  LeftTab::Summary,
         }
     }
 }
 
 impl eframe::App for NetMonApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // drain channel (cap at 8 k to stay responsive)
+        // drain channel
         {
             let mut agg = self.aggregator.lock().unwrap();
             for ev in self.rx.try_iter().take(8_192) {
                 agg.ingest(ev);
             }
         }
-        // Repaint at 2 Hz even when idle
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
 
-        let snap   = snapshot(&*self.aggregator.lock().unwrap());
+        let snap = snapshot(&*self.aggregator.lock().unwrap());
 
-        // if a PID is selected, pull its connections from the aggregator
         let detail_conns: Vec<ConnRow> = if let Some(pid) = self.selected_pid {
             self.aggregator.lock().unwrap()
                 .connections_for_pid(pid)
-                .iter()
-                .map(|r| conn_row_from(r))
-                .collect()
-        } 
-
-        else {
+                .iter().map(|r| conn_row_from(r)).collect()
+        } else {
             Vec::new()
         };
 
         let uptime = self.start.elapsed().as_secs();
 
-        // header bar
+        // ── header bar ──────────────────────────────────────────────────────
         egui::TopBottomPanel::top("hdr")
             .frame(egui::Frame::none().fill(Color32::from_rgb(10, 55, 35)))
             .show(ctx, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("NETMONITOR")
-                            .strong()
-                            .color(GREEN)
-                            .size(17.0),
-                    );
+                    ui.label(RichText::new("NETMONITOR").strong().color(GREEN).size(17.0));
                     ui.separator();
                     ui.label(RichText::new(format!("if: {}", self.iface)).color(CYAN).monospace());
                     ui.separator();
-
-                    ui.label(RichText::new(format!("⬆  {}/s", fmt_bytes(snap.current_out_bps as u64))).color(BLUE_OUT).strong());
-                    ui.label(RichText::new("⬇").color(ORG_IN));
+                    ui.label(RichText::new(format!("⬆️  {}/s", fmt_bytes(snap.current_out_bps as u64))).color(BLUE_OUT).strong());
+                    ui.label(RichText::new("⬇️").color(ORG_IN));
                     ui.label(RichText::new(format!("{}/s", fmt_bytes(snap.current_in_bps as u64))).color(ORG_IN).strong());
-
                     ui.separator();
                     ui.label(RichText::new(format!("total  {}", fmt_bytes(snap.total_bytes))).color(YELLOW));
                     ui.separator();
@@ -303,19 +274,16 @@ impl eframe::App for NetMonApp {
                     ui.label(RichText::new(format!("procs  {}", snap.active_procs)).color(CYAN));
                     ui.separator();
                     ui.label(RichText::new(format!("up  {}s", uptime)).color(DIM));
-                    
+
                     let ctrl = self.controller.lock().unwrap();
                     let blocked = ctrl.blocked_list();
                     if !blocked.is_empty() {
                         ui.separator();
                         ui.label(
                             RichText::new(format!("🚫 {} blocked", blocked.len()))
-                                .color(Color32::from_rgb(255, 100, 80))
-                                .small()
-                                .strong(),
+                                .color(Color32::from_rgb(255, 100, 80)).small().strong(),
                         );
                     }
-                    
                 });
                 ui.add_space(6.0);
             });
@@ -330,32 +298,21 @@ impl eframe::App for NetMonApp {
 
                     if self.selected_pid.is_some() {
                         ui.separator();
-                        ui.label(
-                            RichText::new("ESC or click header to deselect process")
-                                .color(YELLOW).small(),
-                        );
+                        ui.label(RichText::new("ESC or click header to deselect process").color(YELLOW).small());
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-
                         let peak_out = snap.bw_history_out.iter().map(|p| p[1] as u64).max().unwrap_or(0);
                         let peak_in  = snap.bw_history_in.iter().map(|p| p[1] as u64).max().unwrap_or(0);
-
                         ui.label(
-                            RichText::new(format!(
-                                "peak ⬆ {}/s  ⬇{}/s",
-                                fmt_bytes(peak_out),
-                                fmt_bytes(peak_in),
-                            ))
-                            .color(DIM).small(),
+                            RichText::new(format!("peak ⬆️ {}/s  ⬇️{}/s", fmt_bytes(peak_out), fmt_bytes(peak_in)))
+                                .color(DIM).small(),
                         );
                     });
                 });
             });
 
-
-        // ESC clears process selection (FR9)
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.selected_pid = None;
         }
@@ -363,24 +320,18 @@ impl eframe::App for NetMonApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(PANEL_BG).inner_margin(egui::Margin::same(10.0)))
             .show(ctx, |ui| {
-                
-                section_header(ui, "BANDWIDTH  (bytes / second)  ⬆outbound   ⬇inbound");
+
+                section_header(ui, "BANDWIDTH  (bytes / second)  ⬆️outbound   ⬇️inbound");
 
                 let pts_out = PlotPoints::new(snap.bw_history_out.clone());
                 let pts_in  = PlotPoints::new(snap.bw_history_in.clone());
 
-                let latest_x = snap.bw_history_out.last().map(|p| p[0]).unwrap_or(0.0);
-
-                // Recenter button shown when auto_follow is off
                 ui.horizontal(|ui| {
                     if !self.auto_follow {
-                        if ui.button(
-                            RichText::new("⟳ Re-center").color(YELLOW).small().strong()
-                        ).clicked() {
+                        if ui.button(RichText::new("⟳ Re-center").color(YELLOW).small().strong()).clicked() {
                             self.auto_follow = true;
                         }
-                    } 
-                    else {
+                    } else {
                         ui.label(RichText::new("● LIVE").color(GREEN).small());
                     }
                 });
@@ -401,18 +352,16 @@ impl eframe::App for NetMonApp {
                     .include_y(0.0)
                     .set_margin_fraction(egui::Vec2::new(0.0, 0.12));
 
-                // When re-centering, nuke the saved pan/zoom state completely
-                if self.auto_follow {
-                    plot = plot.reset();
-                }
+                if self.auto_follow { plot = plot.reset(); }
 
                 let plot_response = plot.show(ui, |pu| {
-                    pu.line(Line::new(pts_out).color(BLUE_OUT).width(1.8).name("⬆ Out B/s"));
-                    pu.line(Line::new(pts_in).color(ORG_IN).width(1.8).name("⬇ In B/s").fill(0.0));
+                    pu.line(Line::new(pts_out).color(BLUE_OUT).width(1.8).name("⬆️Out B/s"));
+                    pu.line(Line::new(pts_in).color(ORG_IN).width(1.8).name("⬇️In B/s").fill(0.0));
                 });
 
                 if plot_response.response.dragged()
-                    || (plot_response.response.hovered() && ui.input(|i| i.raw_scroll_delta.length() > 0.0))
+                    || (plot_response.response.hovered()
+                        && ui.input(|i| i.raw_scroll_delta.length() > 0.0))
                 {
                     self.auto_follow = false;
                 }
@@ -420,11 +369,11 @@ impl eframe::App for NetMonApp {
                 let table_h = ui.available_height() - 8.0;
 
                 ui.columns(2, |cols| {
-
-                    // Left Panel
+                    // ── LEFT PANEL ──────────────────────────────────────────
                     {
                         let ui = &mut cols[0];
 
+                        // Tab bar
                         ui.horizontal(|ui| {
                             let sum_sel  = self.left_tab == LeftTab::Summary;
                             let proc_sel = self.left_tab == LeftTab::Processes;
@@ -477,58 +426,51 @@ impl eframe::App for NetMonApp {
                                 }
                             });
                     }
-
-                    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                    // Right: hosts tab OR connection detail tab 
+                    
+                    /////////////////////////////////////////////////////////////////////////////////////////////
+                    // ── RIGHT PANEL ─────────────────────────────────────────
                     {
                         let ui = &mut cols[1];
 
-                        // Tab bar
                         ui.horizontal(|ui| {
                             let hosts_sel = self.right_tab == RightTab::Hosts;
                             let conn_sel  = self.right_tab == RightTab::Connections;
- 
+
                             if ui.add(egui::SelectableLabel::new(
                                 hosts_sel,
-                                RichText::new("TOP REMOTE HOSTS").color(if hosts_sel { CYAN } else { DIM }).small().strong(),
+                                RichText::new("TOP REMOTE HOSTS")
+                                    .color(if hosts_sel { CYAN } else { DIM }).small().strong(),
                             )).clicked() {
                                 self.right_tab = RightTab::Hosts;
                             }
- 
+
                             ui.label(RichText::new("|").color(DIM).small());
- 
+
                             let conn_label = if let Some(pid) = self.selected_pid {
                                 format!("CONNECTIONS  (pid {})", pid)
-                            } 
-                            else {
+                            } else {
                                 "CONNECTIONS  (all)".to_string()
                             };
 
                             if ui.add(egui::SelectableLabel::new(
                                 conn_sel,
-                                RichText::new(&conn_label).color(if conn_sel { CYAN } else { DIM }).small().strong(),
+                                RichText::new(&conn_label)
+                                    .color(if conn_sel { CYAN } else { DIM }).small().strong(),
                             )).clicked() {
                                 self.right_tab = RightTab::Connections;
                             }
                         });
 
-
                         ui.separator();
                         ui.add_space(2.0);
-
-                        // section_header(ui, "TOP REMOTE HOSTS  (by volume)");
 
                         egui::ScrollArea::vertical()
                             .id_source("right_panel")
                             .max_height(table_h - 28.0)
                             .show(ui, |ui| {
-
-
                                 match self.right_tab {
                                     RightTab::Hosts => draw_hosts_table(ui, &snap.hosts),
-
                                     RightTab::Connections => {
-                                        // FR9: use per-process list if selected, else global
                                         let rows: &[ConnRow] = if self.selected_pid.is_some() {
                                             &detail_conns
                                         } else {
@@ -536,25 +478,22 @@ impl eframe::App for NetMonApp {
                                         };
                                         draw_connections_table(ui, rows);
                                     }
-
                                 }
                             });
-
                     }
                 });
-                    
             });
-        }
     }
+}
 
+// ── Summary tab ─────────────────────────────────────────────────────────────
 
-//helpers
 fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
     let card_bg   = Color32::from_rgb(22, 25, 34);
     let card_dark = Color32::from_rgb(16, 18, 24);
     let full_w    = ui.available_width();
 
-    // Stat cards 2 by 2 grid
+    // ── Stat cards (2×2 grid) ────────────────────────────────────────────
     ui.columns(2, |cols| {
         stat_card(&mut cols[0], card_bg, "CURRENT BANDWIDTH",
             &format!("{}/s", fmt_bytes(snap.current_bps as u64)), GREEN,
@@ -586,7 +525,7 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
 
     ui.add_space(8.0);
 
-    // donut 
+    // ── Bandwidth share donut ────────────────────────────────────────────
     sub_section_header(ui, "BANDWIDTH SHARE BY PROCESS");
 
     if snap.processes.is_empty() {
@@ -679,7 +618,7 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
             ly += 18.0;
         }
 
-        // "other" if processes were cut off
+        // "other" slice if processes were cut off
         if snap.processes.len() > show_n {
             let other_bw: f64 = snap.processes[show_n..].iter().map(|p| p.bw_bps).sum();
             let pct = (other_bw / total_bw * 100.0) as u32;
@@ -702,8 +641,8 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
 
     ui.add_space(6.0);
 
-    //  Direction split
-    sub_section_header(ui, "DIRECTION SPLIT");
+    // ── Direction split ──────────────────────────────────────────────────
+    sub_section_header(ui, "DIRECTION SPLIT  (cumulative)");
 
     let dir_total = (snap.total_sent + snap.total_recv).max(1) as f32;
     let out_frac  = snap.total_sent as f32 / dir_total;
@@ -715,7 +654,7 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
 
     ui.add_space(8.0);
 
-    // Protocol breakdown
+    // ── Protocol breakdown ───────────────────────────────────────────────
     sub_section_header(ui, "PROTOCOL BREAKDOWN");
 
     let proto_total = (snap.tcp_bytes + snap.udp_bytes).max(1) as f32;
@@ -728,7 +667,7 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
 
     ui.add_space(8.0);
 
-    // Session peaks
+    // ── Session peaks ────────────────────────────────────────────────────
     sub_section_header(ui, "SESSION PEAKS");
 
     let peak_frame = egui::Frame::none()
@@ -771,8 +710,8 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
     ui.add_space(4.0);
 }
 
+// ── Summary helper widgets ───────────────────────────────────────────────────
 
-// helper functions fr draw summary
 fn stat_card(ui: &mut egui::Ui, bg: Color32, label: &str, value: &str, value_color: Color32, sub: &str) {
     let frame = egui::Frame::none()
         .fill(bg)
@@ -824,6 +763,8 @@ fn protocol_bar(ui: &mut egui::Ui, badge_bg: Color32, name: &str, color: Color32
         ui.label(RichText::new(format!("{:.0}%", frac * 100.0)).color(DIM).small());
     });
 }
+
+// ── Process table (extracted from update loop) ───────────────────────────────
 
 fn draw_processes(
     ui:           &mut egui::Ui,
@@ -951,6 +892,7 @@ fn draw_processes(
         });
 }
 
+// ── Connection + host tables ─────────────────────────────────────────────────
 
 fn draw_connections_table(ui: &mut egui::Ui, rows: &[ConnRow]) {
     if rows.is_empty() {
@@ -958,7 +900,7 @@ fn draw_connections_table(ui: &mut egui::Ui, rows: &[ConnRow]) {
         ui.label(RichText::new("No connections recorded yet.").color(DIM).small());
         return;
     }
- 
+
     egui::Grid::new("cg")
         .num_columns(8)
         .spacing([6.0, 3.0])
@@ -968,50 +910,36 @@ fn draw_connections_table(ui: &mut egui::Ui, rows: &[ConnRow]) {
                 ui.label(RichText::new(*h).color(DIM).small().strong());
             }
             ui.end_row();
- 
+
             for row in rows {
-                // Protocol badge with colour coding
                 let proto_col = match row.protocol.as_str() {
                     "TCP" => CYAN,
                     "UDP" => YELLOW,
                     _     => DIM,
                 };
-
                 ui.label(RichText::new(&row.protocol).color(proto_col).small().monospace());
- 
-                // Process name + PID
+
                 let proc_display = if row.pid > 0 {
                     format!("{}\n({})", row.proc_name, row.pid)
                 } else {
                     row.proc_name.clone()
                 };
-
                 ui.label(RichText::new(proc_display).color(GREEN).small().monospace());
- 
+
                 ui.label(RichText::new(&row.username).color(DIM).small());
- 
-                // Remote address
                 ui.label(RichText::new(&row.remote_addr).color(YELLOW).small().monospace());
- 
-                // Ports: local → remote
-                ui.label(
-                    RichText::new(format!("{}→{}", row.local_port, row.remote_port))
-                        .color(DIM).small().monospace()
-                );
- 
-                // sent/recv with direction colours
+                ui.label(RichText::new(format!("{}→{}", row.local_port, row.remote_port))
+                    .color(DIM).small().monospace());
                 ui.label(RichText::new(fmt_bytes(row.bytes_sent)).color(BLUE_OUT).small().monospace());
                 ui.label(RichText::new(fmt_bytes(row.bytes_recv)).color(ORG_IN).small().monospace());
- 
-                // Age: colour shifts red if stale (>10 s since last packet)
+
                 let age_col = if row.age_secs > 10 { RED_DIM } else { DIM };
                 ui.label(RichText::new(format!("{}s", row.age_secs)).color(age_col).small().monospace());
- 
+
                 ui.end_row();
             }
         });
 }
-
 
 fn draw_hosts_table(ui: &mut egui::Ui, hosts: &[HostRow]) {
     egui::Grid::new("hg")
@@ -1023,7 +951,7 @@ fn draw_hosts_table(ui: &mut egui::Ui, hosts: &[HostRow]) {
                 ui.label(RichText::new(*h).color(DIM).small().strong());
             }
             ui.end_row();
- 
+
             for (i, row) in hosts.iter().enumerate() {
                 ui.label(RichText::new(format!("{}", i + 1)).color(DIM).small());
                 ui.label(RichText::new(&row.addr).color(YELLOW).monospace().small());
@@ -1038,13 +966,15 @@ fn draw_hosts_table(ui: &mut egui::Ui, hosts: &[HostRow]) {
                 ui.label(RichText::new(row.packets.to_string()).color(DIM).small().monospace());
                 ui.end_row();
             }
- 
+
             if hosts.is_empty() {
                 ui.label(RichText::new("waiting for traffic…").color(DIM).small());
                 ui.end_row();
             }
         });
 }
+
+// ── Shared helpers ───────────────────────────────────────────────────────────
 
 fn section_header(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
@@ -1067,9 +997,9 @@ fn fmt_bytes(b: u64) -> String {
 
 fn rank_color(rank: usize) -> Color32 {
     match rank {
-        0 => Color32::from_rgb(255, 215, 0),   // gold
-        1 => Color32::from_rgb(192, 192, 192), // silver
-        2 => Color32::from_rgb(205, 127, 50),  // bronze
+        0 => Color32::from_rgb(255, 215, 0),
+        1 => Color32::from_rgb(192, 192, 192),
+        2 => Color32::from_rgb(205, 127, 50),
         _ => Color32::WHITE,
     }
 }
