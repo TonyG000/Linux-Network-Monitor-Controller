@@ -419,129 +419,127 @@ impl eframe::App for NetMonApp {
 
                 let table_h = ui.available_height() - 8.0;
 
-                ui.columns(2, |cols| {
+                let total_w = ui.available_width();
+                let left_w  = (total_w * 0.55).floor(); 
+                let right_w = total_w - left_w - 8.0;
 
-                    // Left Panel
-                    {
-                        let ui = &mut cols[0];
+                ui.horizontal_top(|ui| {
 
-                        ui.horizontal(|ui| {
-                            let sum_sel  = self.left_tab == LeftTab::Summary;
-                            let proc_sel = self.left_tab == LeftTab::Processes;
+                    // LEFT PANEL
+                    ui.allocate_ui_with_layout(
+                        egui::Vec2::new(left_w, table_h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                let sum_sel  = self.left_tab == LeftTab::Summary;
+                                let proc_sel = self.left_tab == LeftTab::Processes;
 
-                            if ui.add(egui::SelectableLabel::new(
-                                sum_sel,
-                                RichText::new("SUMMARY")
-                                    .color(if sum_sel { CYAN } else { DIM }).small().strong(),
-                            )).clicked() {
-                                self.left_tab = LeftTab::Summary;
-                            }
-
-                            ui.label(RichText::new("|").color(DIM).small());
-
-                            let proc_label = if let Some(pid) = self.selected_pid {
-                                format!("PROCESSES  (pid {} selected)", pid)
-                            } else {
-                                "PROCESSES  (click to inspect)".to_string()
-                            };
-
-                            let proc_resp = ui.add(egui::SelectableLabel::new(
-                                proc_sel,
-                                RichText::new(&proc_label)
-                                    .color(if proc_sel { CYAN } else { DIM }).small().strong(),
-                            ));
-                            if proc_resp.clicked() {
-                                self.left_tab = LeftTab::Processes;
-                            }
-                            // clicking the header on processes tab deselects
-                            if proc_resp.clicked() && proc_sel {
-                                self.selected_pid = None;
-                            }
-                        });
-
-                        ui.separator();
-                        ui.add_space(2.0);
-
-                        egui::ScrollArea::vertical()
-                            .id_source("left_panel")
-                            .max_height(table_h)
-                            .show(ui, |ui| {
-                                match self.left_tab {
-                                    LeftTab::Summary => {
-                                        draw_summary(ui, &snap, self.controller.lock().unwrap().blocked_list().len());
-                                    }
-                                    LeftTab::Processes => {
-                                        draw_processes(ui, &snap, &mut self.selected_pid, &mut self.right_tab,
-                                            &self.iface, self.proc_perm_ok, &self.controller);
-                                    }
+                                if ui.add(egui::SelectableLabel::new(
+                                    sum_sel,
+                                    RichText::new("SUMMARY")
+                                        .color(if sum_sel { CYAN } else { DIM }).small().strong(),
+                                )).clicked() {
+                                    self.left_tab = LeftTab::Summary;
                                 }
-                            });
-                    }
 
-                    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                    // Right: hosts tab OR connection detail tab 
-                    {
-                        let ui = &mut cols[1];
+                                ui.label(RichText::new("|").color(DIM).small());
 
-                        // Tab bar
-                        ui.horizontal(|ui| {
-                            let hosts_sel = self.right_tab == RightTab::Hosts;
-                            let conn_sel  = self.right_tab == RightTab::Connections;
- 
-                            if ui.add(egui::SelectableLabel::new(
-                                hosts_sel,
-                                RichText::new("TOP REMOTE HOSTS").color(if hosts_sel { CYAN } else { DIM }).small().strong(),
-                            )).clicked() {
-                                self.right_tab = RightTab::Hosts;
-                            }
- 
-                            ui.label(RichText::new("|").color(DIM).small());
- 
-                            let conn_label = if let Some(pid) = self.selected_pid {
-                                format!("CONNECTIONS  (pid {})", pid)
-                            } 
-                            else {
-                                "CONNECTIONS  (all)".to_string()
-                            };
+                                let proc_label = if let Some(pid) = self.selected_pid {
+                                    format!("PROCESSES  (pid {} selected)", pid)
+                                } else {
+                                    "PROCESSES  (click to inspect)".to_string()
+                                };
 
-                            if ui.add(egui::SelectableLabel::new(
-                                conn_sel,
-                                RichText::new(&conn_label).color(if conn_sel { CYAN } else { DIM }).small().strong(),
-                            )).clicked() {
-                                self.right_tab = RightTab::Connections;
-                            }
-                        });
-
-
-                        ui.separator();
-                        ui.add_space(2.0);
-
-                        // section_header(ui, "TOP REMOTE HOSTS  (by volume)");
-
-                        egui::ScrollArea::vertical()
-                            .id_source("right_panel")
-                            .max_height(table_h - 28.0)
-                            .show(ui, |ui| {
-
-
-                                match self.right_tab {
-                                    RightTab::Hosts => draw_hosts_table(ui, &snap.hosts),
-
-                                    RightTab::Connections => {
-                                        // FR9: use per-process list if selected, else global
-                                        let rows: &[ConnRow] = if self.selected_pid.is_some() {
-                                            &detail_conns
-                                        } else {
-                                            &snap.top_conns
-                                        };
-                                        draw_connections_table(ui, rows);
-                                    }
-
+                                let proc_resp = ui.add(egui::SelectableLabel::new(
+                                    proc_sel,
+                                    RichText::new(&proc_label)
+                                        .color(if proc_sel { CYAN } else { DIM }).small().strong(),
+                                ));
+                                if proc_resp.clicked() {
+                                    self.left_tab = LeftTab::Processes;
+                                }
+                                if proc_resp.clicked() && proc_sel {
+                                    self.selected_pid = None;
                                 }
                             });
 
-                    }
+                            ui.separator();
+                            ui.add_space(2.0);
+
+                            egui::ScrollArea::vertical()
+                                .id_source("left_panel")
+                                .max_height(table_h)
+                                .show(ui, |ui| {
+                                    match self.left_tab {
+                                        LeftTab::Summary => {
+                                            draw_summary(ui, &snap, self.controller.lock().unwrap().blocked_list().len());
+                                        }
+                                        LeftTab::Processes => {
+                                            draw_processes(ui, &snap, &mut self.selected_pid, &mut self.right_tab,
+                                                &self.iface, self.proc_perm_ok, &self.controller);
+                                        }
+                                    }
+                                });
+                        },
+                    );
+
+                    ui.add_space(8.0); // space between panels
+
+                    //  RIGHT PANEL
+                    ui.allocate_ui_with_layout(
+                        egui::Vec2::new(right_w, table_h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                let hosts_sel = self.right_tab == RightTab::Hosts;
+                                let conn_sel  = self.right_tab == RightTab::Connections;
+
+                                if ui.add(egui::SelectableLabel::new(
+                                    hosts_sel,
+                                    RichText::new("TOP REMOTE HOSTS").color(if hosts_sel { CYAN } else { DIM }).small().strong(),
+                                )).clicked() {
+                                    self.right_tab = RightTab::Hosts;
+                                }
+
+                                ui.label(RichText::new("|").color(DIM).small());
+
+                                let conn_label = if let Some(pid) = self.selected_pid {
+                                    format!("CONNECTIONS  (pid {})", pid)
+                                } else {
+                                    "CONNECTIONS  (all)".to_string()
+                                };
+
+                                if ui.add(egui::SelectableLabel::new(
+                                    conn_sel,
+                                    RichText::new(&conn_label).color(if conn_sel { CYAN } else { DIM }).small().strong(),
+                                )).clicked() {
+                                    self.right_tab = RightTab::Connections;
+                                }
+                            });
+
+                            ui.separator();
+                            ui.add_space(2.0);
+
+                            egui::ScrollArea::vertical()
+                                .id_source("right_panel")
+                                .max_height(table_h - 28.0)
+                                .show(ui, |ui| {
+                                    match self.right_tab {
+                                        RightTab::Hosts => draw_hosts_table(ui, &snap.hosts),
+                                        RightTab::Connections => {
+                                            let rows: &[ConnRow] = if self.selected_pid.is_some() {
+                                                &detail_conns
+                                            } else {
+                                                &snap.top_conns
+                                            };
+                                            draw_connections_table(ui, rows);
+                                        }
+                                    }
+                                });
+                        },
+                    );
                 });
+
                     
             });
         }
@@ -596,24 +594,33 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
         let show_n = snap.processes.len().min(7);
 
         // Use painter to draw the donut
-        let donut_size = (full_w * 0.55).min(160.0);
+        
+        let donut_size = (full_w * 0.42).min(160.0); // slightly smaller so legend fits
+
         let (rect, _) = ui.allocate_exact_size(
             egui::Vec2::new(full_w, donut_size + 8.0),
             egui::Sense::hover(),
         );
-        let painter  = ui.painter();
-        let center   = egui::Pos2::new(rect.min.x + donut_size / 2.0 + 8.0, rect.center().y);
-        let r_outer  = donut_size / 2.0;
-        let r_inner  = r_outer * 0.56;
-        let gap_rad  = 0.025_f32; // small gap between segments
+        let painter = ui.painter();
 
-        let mut start_angle: f32 = -std::f32::consts::FRAC_PI_2; // start at top
+        let legend_w  = 110.0_f32;   // reserved width for the legend on the right
+        let donut_area_w = full_w - legend_w;
+        let center = egui::Pos2::new(
+            rect.min.x + donut_area_w / 2.0,  // horizontally centered in the donut area
+            rect.center().y,
+        );
+
+        let r_outer = donut_size / 2.0;
+        let r_inner = r_outer * 0.56;
+        let gap_rad = 0.025_f32;
 
         // background ring
         painter.circle_stroke(
             center, r_outer,
             egui::Stroke::new(r_outer - r_inner, Color32::from_rgb(28, 30, 40)),
         );
+
+        let mut start_angle: f32 = -std::f32::consts::FRAC_PI_2;
 
         for (i, proc) in snap.processes[..show_n].iter().enumerate() {
             let frac   = (proc.bw_bps / total_bw) as f32;
@@ -656,7 +663,7 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
         );
 
         // legend to the right of donut
-        let legend_x = rect.min.x + donut_size + 18.0;
+        let legend_x = rect.min.x + donut_area_w + 4.0;
         let mut ly   = rect.min.y + 6.0;
         for (i, proc) in snap.processes[..show_n].iter().enumerate() {
             let color = DONUT_COLORS[i % DONUT_COLORS.len()];
