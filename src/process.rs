@@ -1,21 +1,9 @@
-// process.rs  (FR3, FR4)
-//
-// Resolves which local process owns a given TCP/UDP socket by walking
-//   /proc/net/{tcp,udp}  →  socket inode
-//   /proc/*/fd/*         →  PID
-//   /proc/<pid>/status   →  UID + process name
-//   /etc/passwd          →  username
-//
-// The new `find_process_with_direction` variant additionally reports whether
-// the src or dst address was found as the local side, enabling FR5 to
-// distinguish bytes-sent from bytes-received.
-
 use std::fs;
 use std::str::FromStr;
 
 use crate::capture::Protocol;
 
-// ─── types ────────────────────────────────────────────────────────────────────
+//  types 
 
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
@@ -25,7 +13,7 @@ pub struct ProcessInfo {
     pub username: String,
 }
 
-// ─── /proc/net formatting ─────────────────────────────────────────────────────
+//  /proc/net formatting 
 
 /// Format an IP+port pair the same way the Linux kernel writes it in
 /// /proc/net/tcp and /proc/net/udp.
@@ -38,7 +26,7 @@ fn format_socket_addr(ip: u32, port: u16) -> String {
     format!("{:08X}:{:04X}", kernel_ip, port)
 }
 
-// ─── /proc/net lookup ────────────────────────────────────────────────────────
+//  /proc/net lookup 
 
 fn find_socket_inode(proto_file: &str, local: &str, remote: &str) -> Option<u64> {
     let contents = fs::read_to_string(proto_file).ok()?;
@@ -75,7 +63,7 @@ fn find_socket_inode(proto_file: &str, local: &str, remote: &str) -> Option<u64>
     None
 }
 
-// ─── PID lookup by socket inode ──────────────────────────────────────────────
+//  PID lookup by socket inode 
 
 fn find_pid_by_inode(inode: u64) -> Option<u32> {
     let target  = format!("socket:[{}]", inode);
@@ -100,7 +88,7 @@ fn find_pid_by_inode(inode: u64) -> Option<u32> {
     None
 }
 
-// ─── process metadata ────────────────────────────────────────────────────────
+//  process metadata 
 
 fn get_process_uid_and_name(pid: u32) -> Option<(u32, String)> {
     let path     = format!("/proc/{}/status", pid);
@@ -141,7 +129,7 @@ fn uid_to_username(target_uid: u32) -> String {
     target_uid.to_string()
 }
 
-// ─── internal resolve helper ─────────────────────────────────────────────────
+//  internal resolve helper 
 
 fn resolve(proto_file: &str, local: &str, remote: &str) -> Option<ProcessInfo> {
     let inode = find_socket_inode(proto_file, local, remote)?;
@@ -151,7 +139,7 @@ fn resolve(proto_file: &str, local: &str, remote: &str) -> Option<ProcessInfo> {
     Some(ProcessInfo { pid, name, uid, username })
 }
 
-// ─── public API ──────────────────────────────────────────────────────────────
+//  public API 
 
 /// Locate the process that owns the given TCP/UDP socket (FR3, FR4).
 ///

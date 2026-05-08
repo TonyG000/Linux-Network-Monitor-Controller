@@ -1,14 +1,6 @@
-// capture.rs
-//
-// FR1  – Real-time packet capture on one or more Linux NICs via libpcap.
-// FR2  – Extract src/dst IP, src/dst port, protocol, and packet size from
-//         every captured IPv4 frame.
-// FR14 – Enumerate available interfaces so the caller can choose one at runtime.
-
 use pcap::{Capture, Device};
 
-// ─── types ───────────────────────────────────────────────────────────────────
-
+//  types 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
     Tcp,

@@ -1,27 +1,22 @@
-// main.rs
-//
-// Entry point.  Wires the three layers together:
-//
-//   ┌─────────────────────┐   PacketEvent    ┌──────────────────────────────┐
-//   │  capture thread     │ ──────────────►  │  GUI thread (main)           │
-//   │  CaptureEngine::run │  sync_channel    │  Aggregator::ingest + egui   │
-//   └─────────────────────┘                  └──────────────────────────────┘
-//
-// FR1  – real-time capture  (capture.rs)
-// FR2  – header extraction  (capture.rs)
-// FR3  – process resolution (process.rs)
-// FR4  – user resolution    (process.rs)
-// FR5  – statistics         (stats.rs)
-// FR6  – live dashboard     (gui.rs)
-// FR7  – process ranking    (gui.rs)
+//Implemented FRs:
+// FR1 : real-time capture  (capture.rs)
+// FR2 : header extraction  (capture.rs)
+// FR3 : process resolution (process.rs)
+// FR4 : user resolution    (process.rs)
+// FR5 : statistics         (stats.rs)
+// FR6 : live dashboard     (gui.rs)
+// FR7 : process ranking    (gui.rs)
+// FR8 traffic direction
+// FR9 per connection details
 // FR10 traffic control (control.rs)
-// FR14 – interface selector (this file)
+// FR14: interface selector
 
 mod capture;
 mod process;
 mod stats;
 mod gui;
 mod control;
+mod logger;
 
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
@@ -32,8 +27,9 @@ use eframe::egui;
 use capture::{CaptureEngine, Protocol};
 use process::find_process_with_direction;
 use stats::{Aggregator, PacketEvent};
-use gui::NetMonApp;
+use gui::App;
 use control::TrafficController;
+use logger::SessionLogger;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -42,7 +38,7 @@ fn main() {
     let iface = match args.get(1) {
         Some(i) => i.clone(),
         None => {
-            eprintln!("Usage: netmonitor <interface>\n");
+            eprintln!("Usage: afashtak <interface>\n");
             eprintln!("Available interfaces:");
             match CaptureEngine::list_interfaces() {
                 Ok(list) => list.iter().for_each(|i| eprintln!("  {i}")),
@@ -71,6 +67,7 @@ fn main() {
     let (tx, rx)   = mpsc::sync_channel::<PacketEvent>(16_384);
     let aggregator = Arc::new(Mutex::new(Aggregator::default()));
     let controller = Arc::new(Mutex::new(TrafficController::new()));
+    let session_logger = Arc::new(Mutex::new(SessionLogger::new()));
 
     // ── capture thread ────────────────────────────────────────────────────────
     thread::Builder::new()
@@ -97,7 +94,7 @@ fn main() {
     // ── GUI (must run on the main thread) ─────────────────────────────────────
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("NetMonitor — Live Dashboard")
+            .with_title("AFASHTAK: Linux Network Monitor and Controller")
             .with_inner_size([1_260.0, 760.0])
             .with_min_inner_size([900.0, 500.0]),
         ..Default::default()
@@ -106,15 +103,24 @@ fn main() {
     let agg_clone   = Arc::clone(&aggregator);
     let iface_clone = iface.clone();
     let ctrl_clone = Arc::clone(&controller);
+    let logger_clone = Arc::clone(&session_logger);
 
     eframe::run_native(
-        "NetMonitor",
+        "Afashtak",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(NetMonApp::new(cc, agg_clone, rx, iface_clone, ctrl_clone)))
+            Ok(Box::new(App::new(cc, agg_clone, rx, iface_clone, ctrl_clone, logger_clone,)))
         }),
     )
     .unwrap_or_else(|e| eprintln!("GUI error: {e:?}"));
 
     controller.lock().unwrap().unblock_all();
+
+     let logger = session_logger.lock().unwrap();
+    if !logger.connections.is_empty() {
+        eprintln!(
+            "Session ended. {} connection records in log (use Export in GUI before exit to save)",
+            logger.connections.len()
+        );
+    }
 }

@@ -96,6 +96,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "afashtak"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_plot",
+ "pcap",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2061,15 +2070,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c196769dd60fd4f363e11d948139556a344e79d451aeb2fa2fd040738ef7691"
 dependencies = [
  "jni-sys 0.3.1",
-]
-
-[[package]]
-name = "netmonitor"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui_plot",
- "pcap",
 ]
 
 [[package]]
