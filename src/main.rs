@@ -1,16 +1,3 @@
-//Implemented FRs:
-// FR1 : real-time capture  (capture.rs)
-// FR2 : header extraction  (capture.rs)
-// FR3 : process resolution (process.rs)
-// FR4 : user resolution    (process.rs)
-// FR5 : statistics         (stats.rs)
-// FR6 : live dashboard     (gui.rs)
-// FR7 : process ranking    (gui.rs)
-// FR8 traffic direction
-// FR9 per connection details
-// FR10 traffic control (control.rs)
-// FR14: interface selector
-
 mod capture;
 mod process;
 mod stats;
@@ -34,7 +21,7 @@ use logger::SessionLogger;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // ── FR14: interface selection ─────────────────────────────────────────────
+    //interface selection 
     let iface = match args.get(1) {
         Some(i) => i.clone(),
         None => {
@@ -61,7 +48,7 @@ fn main() {
     println!("{:<22} {:<22} {:<6} {:>7} {}", "SRC", "DST", "PROTO", "BYTES", "PROCESS");
     println!("{}", "─".repeat(80));
 
-    // ── shared state ─────────────────────────────────────────────────────────
+    // shared state 
     // Bounded channel: if the GUI thread falls behind, try_send silently drops
     // the excess rather than allowing unbounded memory growth.
     let (tx, rx)   = mpsc::sync_channel::<PacketEvent>(16_384);
@@ -69,7 +56,7 @@ fn main() {
     let controller = Arc::new(Mutex::new(TrafficController::new()));
     let session_logger = Arc::new(Mutex::new(SessionLogger::new()));
 
-    // ── capture thread ────────────────────────────────────────────────────────
+    //  capture thread
     thread::Builder::new()
         .name("capture".into())
         .spawn(move || {
@@ -91,7 +78,7 @@ fn main() {
         })
         .expect("failed to spawn capture thread");
 
-    // ── GUI (must run on the main thread) ─────────────────────────────────────
+    //  GUI 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("AFASHTAK: Linux Network Monitor and Controller")
