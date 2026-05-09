@@ -16,8 +16,8 @@ const YELLOW: Color32 = Color32::from_rgb(255, 196, 68);
 const BLUE_OUT: Color32 = Color32::from_rgb(100, 180, 255);
 const ORG_IN: Color32 = Color32::from_rgb(255, 155, 80);
 const DIM: Color32 = Color32::from_rgb(110, 110, 120);
-const PANEL_BG: Color32 = Color32::from_rgb(16,  18,  24);
-const CARD_BG: Color32 = Color32::from_rgb(22,  25,  33);
+const PANEL_BG: Color32 = Color32::from_rgb(15, 8, 26);
+const CARD_BG: Color32 = Color32::from_rgb(31, 22, 46);
 const RED_DIM: Color32 = Color32::from_rgb(200, 80,  60);
 
 const DONUT_COLORS: &[Color32] = &[
@@ -249,7 +249,7 @@ impl App {
         let mut vis = Visuals::dark();
         vis.panel_fill = PANEL_BG;
         vis.window_fill = CARD_BG;
-        vis.extreme_bg_color = Color32::from_rgb(10, 11, 15);
+        vis.extreme_bg_color = Color32::from_rgb(8, 5, 18);
         vis.widgets.noninteractive.bg_fill = CARD_BG;
         cc.egui_ctx.set_visuals(vis);
 
@@ -345,7 +345,7 @@ impl eframe::App for App {
 
         // header bar
         egui::TopBottomPanel::top("hdr")
-            .frame(egui::Frame::none().fill(Color32::from_rgb(10, 55, 35)))
+            .frame(egui::Frame::none().fill(Color32::from_rgb(47, 25, 84)))
             .show(ctx, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -405,7 +405,7 @@ impl eframe::App for App {
                     let snap_label = format!("Snapshot ({})", self.snapshot_count);
                     if ui.add(
                         egui::Button::new(RichText::new(&snap_label).color(GREEN).small().strong())
-                            .fill(Color32::from_rgb(14, 38, 22))
+                            .fill(Color32::from_rgb(35, 20, 55))
                     ).on_hover_text("Capture current connections into the session log").clicked() {
                         self.take_snapshot();
                     }
@@ -417,7 +417,7 @@ impl eframe::App for App {
                     let log_col   = if log_count > 0 { YELLOW } else { DIM };
                     if ui.add(
                         egui::Button::new(RichText::new(&log_label).color(log_col).small())
-                            .fill(Color32::from_rgb(30, 28, 14))
+                            .fill(Color32::from_rgb(35, 20, 55))
                     ).on_hover_text("View session log entries").clicked() {
                         self.log_viewer.open = !self.log_viewer.open;
                     }
@@ -426,7 +426,7 @@ impl eframe::App for App {
 
                     if ui.add(
                         egui::Button::new(RichText::new("Export").color(CYAN).small())
-                            .fill(Color32::from_rgb(30, 28, 14))
+                            .fill(Color32::from_rgb(35, 20, 55))
                     ).on_hover_text("Export session log to CSV or JSON").clicked() {
                         self.export_modal.open = true;
                     }
@@ -438,7 +438,7 @@ impl eframe::App for App {
         });
 
         egui::TopBottomPanel::bottom("status")
-            .frame(egui::Frame::none().fill(Color32::from_rgb(10, 18, 12)))
+            .frame(egui::Frame::none().fill(Color32::from_rgb(12, 8, 22)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
@@ -683,7 +683,7 @@ impl eframe::App for App {
                             // Filter bar for the Connections tab
                             if self.right_tab == RightTab::Connections {
                                 egui::Frame::none()
-                                    .fill(Color32::from_rgb(18, 20, 28))
+                                    .fill(Color32::from_rgb(28, 20, 42))
                                     .inner_margin(egui::Margin::symmetric(6.0, 4.0))
                                     .rounding(egui::Rounding::same(4.0))
                                     .show(ui, |ui| {
@@ -737,7 +737,7 @@ impl eframe::App for App {
                                                 ui.add_space(4.0);
                                                 if ui.add(
                                                     egui::Button::new(
-                                                        RichText::new("✕ clear").color(RED_DIM).small()
+                                                        RichText::new("clear").color(RED_DIM).small()
                                                     ).frame(false)
                                                 ).clicked() {
                                                     self.filter_proc.clear();
@@ -806,8 +806,8 @@ impl eframe::App for App {
 
 //helpers
 fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
-    let card_bg   = Color32::from_rgb(22, 25, 34);
-    let card_dark = Color32::from_rgb(16, 18, 24);
+    let card_bg   = Color32::from_rgb(31, 22, 46);
+    let card_dark = Color32::from_rgb(20, 14, 34);
     let full_w    = ui.available_width();
 
     // Stat cards 2 by 2 grid
@@ -875,7 +875,7 @@ fn draw_summary(ui: &mut egui::Ui, snap: &Snapshot, blocked_count: usize) {
         // background ring
         painter.circle_stroke(
             center, r_outer,
-            egui::Stroke::new(r_outer - r_inner, Color32::from_rgb(28, 30, 40)),
+            egui::Stroke::new(r_outer - r_inner, Color32::from_rgb(32, 22, 50)),
         );
 
         let mut start_angle: f32 = -std::f32::consts::FRAC_PI_2;
@@ -1138,7 +1138,7 @@ fn draw_processes(
         .spacing([6.0, 3.0])
         .striped(true)
         .show(ui, |ui| {
-            for h in &["#", "PID", "PROCESS", "USER", "B/S", "↑SENT / ↓RECV", "ACTION"] {
+            for h in &["#", "PID", "PROCESS", "USER", "B/S", "↑ SENT / ↓ RECV", "ACTION"] {
                 ui.label(RichText::new(*h).color(DIM).small().strong());
             }
             ui.end_row();
@@ -1181,7 +1181,7 @@ fn draw_processes(
                     ui.add(
                         egui::ProgressBar::new(row.bw_frac)
                             .desired_width(90.0)
-                            .fill(Color32::from_rgb(40, 160, 80)),
+                            .fill(Color32::from_rgb(120, 60, 180)),
                     );
                 });
 
@@ -1499,7 +1499,7 @@ fn draw_log_viewer(ui: &mut egui::Ui, logger: &Arc<Mutex<SessionLogger>>) {
     // Summary bar at top of viewer
     if let Some(ref s) = lg.summary {
         egui::Frame::none()
-            .fill(Color32::from_rgb(16, 22, 30))
+            .fill(Color32::from_rgb(22, 14, 36))
             .inner_margin(egui::Margin::symmetric(8.0, 5.0))
             .rounding(egui::Rounding::same(4.0))
             .show(ui, |ui| {
