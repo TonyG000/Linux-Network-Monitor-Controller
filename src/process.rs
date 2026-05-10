@@ -15,19 +15,15 @@ pub struct ProcessInfo {
 
 //  /proc/net formatting 
 
-/// Format an IP+port pair the same way the Linux kernel writes it in
-/// /proc/net/tcp and /proc/net/udp.
+// Format an IP+port pair the same way the Linux kernel writes it in
+// /proc/net/tcp and /proc/net/udp.
 fn format_socket_addr(ip: u32, port: u16) -> String {
-    // Packets arrive with the IP in network byte order stored as a big-endian
-    // u32.  The kernel dumps __be32 with printf("%08X"), which is native-endian
-    // on little-endian hosts (i.e. byte-swapped from network order).
     let bytes      = ip.to_be_bytes();
     let kernel_ip  = u32::from_ne_bytes(bytes);
     format!("{:08X}:{:04X}", kernel_ip, port)
 }
 
 //  /proc/net lookup 
-
 fn find_socket_inode(proto_file: &str, local: &str, remote: &str) -> Option<u64> {
     let contents = fs::read_to_string(proto_file).ok()?;
 
@@ -42,17 +38,17 @@ fn find_socket_inode(proto_file: &str, local: &str, remote: &str) -> Option<u64>
         if parts.len() < 10 { continue; }
 
         let local_addr = parts[1];
-        let rem_addr   = parts[2];
-        let inode_str  = parts[9];
+        let rem_addr = parts[2];
+        let inode_str = parts[9];
 
         let matches =
             // Exact 4-tuple
-            (local_addr == local          && rem_addr == remote)
+            (local_addr == local && rem_addr == remote)
             // Remote not connected (UDP common case)
-            || (local_addr == local          && rem_addr == "00000000:0000")
+            || (local_addr == local && rem_addr == "00000000:0000")
             // Socket bound to 0.0.0.0 (matches any local interface IP)
-            || (local_addr == any_ip_local   && rem_addr == remote)
-            || (local_addr == any_ip_local   && rem_addr == "00000000:0000");
+            || (local_addr == any_ip_local && rem_addr == remote)
+            || (local_addr == any_ip_local && rem_addr == "00000000:0000");
 
         if matches {
             if let Ok(inode) = u64::from_str(inode_str) {
@@ -64,7 +60,6 @@ fn find_socket_inode(proto_file: &str, local: &str, remote: &str) -> Option<u64>
 }
 
 //  PID lookup by socket inode 
-
 fn find_pid_by_inode(inode: u64) -> Option<u32> {
     let target  = format!("socket:[{}]", inode);
     let entries = fs::read_dir("/proc").ok()?;
@@ -89,7 +84,6 @@ fn find_pid_by_inode(inode: u64) -> Option<u32> {
 }
 
 //  process metadata 
-
 fn get_process_uid_and_name(pid: u32) -> Option<(u32, String)> {
     let path     = format!("/proc/{}/status", pid);
     let contents = fs::read_to_string(path).ok()?;
@@ -130,7 +124,6 @@ fn uid_to_username(target_uid: u32) -> String {
 }
 
 //  internal resolve helper 
-
 fn resolve(proto_file: &str, local: &str, remote: &str) -> Option<ProcessInfo> {
     let inode = find_socket_inode(proto_file, local, remote)?;
     let pid   = find_pid_by_inode(inode)?;
@@ -140,10 +133,8 @@ fn resolve(proto_file: &str, local: &str, remote: &str) -> Option<ProcessInfo> {
 }
 
 //  public API 
-
-/// Locate the process that owns the given TCP/UDP socket (FR3, FR4).
-///
-/// Returns `None` if the socket cannot be matched to any local process.
+// Locate the process that owns the given TCP/UDP socket (FR3, FR4).
+// Returns `None` if the socket cannot be matched to any local process.
 pub fn find_process(
     protocol: Protocol,
     src_ip:   u32, src_port: u16,
@@ -153,20 +144,20 @@ pub fn find_process(
         .map(|(info, _)| info)
 }
 
-/// Like `find_process` but also returns the traffic direction:
-///   `true`  → src is the local endpoint (packet is outbound / sent)
-///   `false` → dst is the local endpoint (packet is inbound  / received)
-///
-/// Used by FR5 to distinguish bytes-sent from bytes-received per process.
+// Like find_process but also returns the traffic direction:
+//   true: src is the local endpoint (packet is outbound / sent)
+//   false: dst is the local endpoint (packet is inbound  / received)
+//
+// Used by FR5 to distinguish bytes-sent from bytes-received per process.
 pub fn find_process_with_direction(
     protocol: Protocol,
-    src_ip:   u32, src_port: u16,
-    dst_ip:   u32, dst_port: u16,
+    src_ip: u32, src_port: u16,
+    dst_ip: u32, dst_port: u16,
 ) -> Option<(ProcessInfo, bool)> {
     let proto_file = match protocol {
         Protocol::Tcp   => "/proc/net/tcp",
         Protocol::Udp   => "/proc/net/udp",
-        _               => return None,
+        _ => return None,
     };
     let src_str = format_socket_addr(src_ip, src_port);
     let dst_str = format_socket_addr(dst_ip, dst_port);

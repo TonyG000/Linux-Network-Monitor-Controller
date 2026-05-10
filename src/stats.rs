@@ -6,8 +6,7 @@ use crate::capture::{Packet, Protocol};
 use crate::process::ProcessInfo;
 
 //  packet event 
-
-/// Enriched packet produced by the capture thread.
+// packet produced by the capture thread.
 pub struct PacketEvent {
     pub packet:      Packet,
     pub process:     Option<ProcessInfo>,
@@ -18,21 +17,22 @@ pub struct PacketEvent {
 }
 
 //  per-process statistics 
-
-/// Sliding-window size for the per-process bandwidth estimate.
+// Sliding-window size for the per-process bandwidth estimate.
 const BW_WINDOW_SECS: f64 = 5.0;
 
 #[derive(Clone, Debug)]
 pub struct ProcessStats {
-    pub pid:           u32,
+    pub pid: u32,
     pub uid: u32,
-    pub name:          String,
-    pub username:      String,
-    pub bytes_sent:    u64,
-    pub bytes_recv:    u64,
+    pub name: String,
+    pub username: String,
+    pub bytes_sent: u64,
+    pub bytes_recv: u64,
     pub packet_count:  u64,
-    /// Current bandwidth in bytes/second (sliding-window average).
+
+    // Current bandwidth in bytes/second (sliding-window average).
     pub bandwidth_bps: f64,
+
     // Internal: (instant, byte_count) pairs in the sliding window.
     window: VecDeque<(Instant, u64)>,
 }
@@ -40,15 +40,15 @@ pub struct ProcessStats {
 impl ProcessStats {
     fn new(info: &ProcessInfo) -> Self {
         ProcessStats {
-            pid:           info.pid,
+            pid: info.pid,
             uid: info.uid,
-            name:          info.name.clone(),
-            username:      info.username.clone(),
-            bytes_sent:    0,
-            bytes_recv:    0,
+            name: info.name.clone(),
+            username: info.username.clone(),
+            bytes_sent: 0,
+            bytes_recv: 0,
             packet_count:  0,
             bandwidth_bps: 0.0,
-            window:        VecDeque::new(),
+            window: VecDeque::new(),
         }
     }
 
@@ -72,7 +72,6 @@ impl ProcessStats {
 }
 
 //  per-remote-host statistics 
-
 #[derive(Clone, Debug)]
 pub struct HostStats {
     pub addr:         String,
@@ -80,8 +79,7 @@ pub struct HostStats {
     pub packet_count: u64,
 }
 
-// FR9: CONNECTION DETAILS
-
+// CONNECTION DETAILS
 // ConnectionKey uniquely identifies one logical connection.
 // packets belong to the same connection if all five fields match.
 // Derives Hash + Eq so it can be used as a HashMap key.
@@ -147,35 +145,27 @@ pub type BwSample = [f64; 3];
 
 
 // aggregator 
-
-/// Maximum number of distinct connections to keep in memory.
+// Maximum number of distinct connections to keep in memory.
 const MAX_CONNECTIONS: usize = 1000;
 
-/// Central store for all live statistics.
-///
-/// Wrapped in `Arc<Mutex<>>` so the capture thread can produce events while
-/// the GUI thread reads a consistent snapshot.
+// Central store for all live statistics.
+// Wrapped in `Arc<Mutex<>>` so the capture thread can produce events while
+// the GUI thread reads a consistent snapshot.
 pub struct Aggregator {
-    /// Per-process statistics keyed by PID.
-    pub processes:         HashMap<u32, ProcessStats>,
-    /// Per-remote-IP statistics keyed by IPv4 address (network byte order).
-    pub hosts:             HashMap<u32, HostStats>,
-    /// Circular buffer of `[elapsed_seconds, bytes_per_second]` samples –
-    /// one entry per second, up to 120 seconds of history.
+    pub processes: HashMap<u32, ProcessStats>,
+    pub hosts: HashMap<u32, HostStats>,
     pub bandwidth_history: VecDeque<BwSample>,
-    /// Most-recently measured NIC bandwidth (bytes/s).
-    pub current_bps:       f64,
+    pub current_bps: f64,
     pub current_out_bps: f64,
     pub current_in_bps: f64,
-    pub total_bytes:       u64,
-    pub total_packets:     u64,
+    pub total_bytes: u64,
+    pub total_packets: u64,
 
     pub connections: HashMap<ConnectionKey, ConnectionRecord>, // for per connectoin records
     connection_order: VecDeque<ConnectionKey>,
 
-    // ── internal ──────────────────────────────────────────────────────────────
-    start:           Instant,
-    last_tick:       Instant,
+    start: Instant,
+    last_tick: Instant,
     bytes_out_tick: u64,
     bytes_in_tick: u64,
 }
@@ -184,18 +174,18 @@ impl Default for Aggregator {
     fn default() -> Self {
         let now = Instant::now();
         Aggregator {
-            processes:         HashMap::new(),
-            hosts:             HashMap::new(),
+            processes: HashMap::new(),
+            hosts: HashMap::new(),
             bandwidth_history: VecDeque::with_capacity(120),
-            current_bps:       0.0,
-            current_out_bps:   0.0,
-            current_in_bps:    0.0,
-            total_bytes:       0,
-            total_packets:     0,
-            connections:       HashMap::new(),
-            connection_order:  VecDeque::new(),
-            start:             now,
-            last_tick:         now,
+            current_bps: 0.0,
+            current_out_bps: 0.0,
+            current_in_bps: 0.0,
+            total_bytes: 0,
+            total_packets: 0,
+            connections: HashMap::new(),
+            connection_order: VecDeque::new(),
+            start: now,
+            last_tick: now,
             bytes_out_tick: 0,
             bytes_in_tick: 0,
         }
@@ -203,9 +193,9 @@ impl Default for Aggregator {
 }
 
 impl Aggregator {
-    /// Process one packet event, updating all statistics.
+    // Process one packet event, updating all statistics.
     pub fn ingest(&mut self, ev: PacketEvent) {
-        let now   = Instant::now();
+        let now = Instant::now();
         let bytes = ev.packet.size_bytes as u64;
 
         self.total_bytes += bytes;
@@ -246,7 +236,7 @@ impl Aggregator {
                 .or_insert_with(|| ProcessStats::new(info));
 
             if ev.is_outbound { entry.bytes_sent += bytes; }
-            else              { entry.bytes_recv += bytes; }
+            else { entry.bytes_recv += bytes; }
             entry.packet_count += 1;
             entry.add_bytes(bytes, now);
         }
@@ -328,9 +318,7 @@ impl Aggregator {
     }
 
 
-    //  FR7: sorted process views 
-
-    /// Return up to `n` processes sorted by current bandwidth (highest first).
+    // Return up to n processes sorted by current bandwidth (highest first).
     pub fn top_processes_by_bandwidth(&self, n: usize) -> Vec<&ProcessStats> {
         let mut v: Vec<&ProcessStats> = self.processes.values().collect();
         v.sort_by(|a, b| {
@@ -342,7 +330,7 @@ impl Aggregator {
         v
     }
 
-    /// Return up to `n` remote hosts sorted by total bytes (highest first).
+    // Return up to n remote hosts sorted by total bytes (highest first).
     pub fn top_hosts_by_bytes(&self, n: usize) -> Vec<&HostStats> {
         let mut v: Vec<&HostStats> = self.hosts.values().collect();
         v.sort_by(|a, b| b.bytes.cmp(&a.bytes));
@@ -374,7 +362,7 @@ impl Aggregator {
     }
 
 
-    /// Number of distinct processes seen so far (approximation for FR5).
+    // Number of distinct processes seen so far (approximation for FR5).
     pub fn active_process_count(&self) -> usize {
         self.processes.len()
     }
