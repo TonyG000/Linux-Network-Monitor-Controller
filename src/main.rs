@@ -12,7 +12,6 @@ use std::thread;
 use eframe::egui;
 
 use capture::{CaptureEngine, Protocol};
-use process::find_process_with_direction;
 use stats::{Aggregator, PacketEvent};
 use gui::App;
 use control::TrafficController;
@@ -60,10 +59,11 @@ fn main() {
     thread::Builder::new()
         .name("capture".into())
         .spawn(move || {
+            let mut resolver = process::ProcessResolver::new();
             let _ = engine.run(|pkt| {
                 std::thread::sleep(std::time::Duration::from_millis(2));
-                // FR3 + FR4: resolve process and direction
-                let (process, is_outbound) = find_process_with_direction(
+                // FR3 + FR4 + NFR3: resolve process and direction with caching
+                let (process, is_outbound) = resolver.resolve_with_direction(
                     pkt.protocol,
                     pkt.src_ip, pkt.src_port,
                     pkt.dst_ip, pkt.dst_port,
@@ -73,7 +73,7 @@ fn main() {
                 // Non-blocking send; silently drop on backpressure.
                 if let Err(e) = tx.send(PacketEvent { packet: pkt, process, is_outbound }) {
                     eprintln!("Channel send failed: {:?}", e);
-}
+                }
             });
         })
         .expect("failed to spawn capture thread");
