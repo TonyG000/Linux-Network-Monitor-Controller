@@ -1,17 +1,46 @@
 use std::fs;
 use std::str::FromStr;
+use std::collections::HashMap;
+use std::time::{Instant, Duration};
 
 use crate::capture::Protocol;
 
 //  types 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub pid:      u32,
     pub name:     String,
     pub uid:      u32,
     pub username: String,
 }
+
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+struct CacheKey {
+    protocol: Protocol,
+    src_ip:   u32,
+    src_port: u16,
+    dst_ip:   u32,
+    dst_port: u16,
+}
+
+pub struct ProcessResolver {
+    // connection -> (info, is_outbound, timestamp)
+    conn_cache: HashMap<CacheKey, (ProcessInfo, bool, Instant)>,
+    // inode -> (pid, timestamp)
+    inode_cache: HashMap<u64, (u32, Instant)>,
+    // pid -> (uid, name, timestamp)
+    proc_cache: HashMap<u32, (u32, String, Instant)>,
+    // uid -> username
+    user_cache: HashMap<u32, String>,
+
+    last_cleanup: Instant,
+}
+
+const CACHE_TTL: Duration = Duration::from_secs(30);
+const CONN_CACHE_MAX: usize = 2000;
+const INODE_CACHE_MAX: usize = 1000;
+const PROC_CACHE_MAX: usize = 500;
 
 //  /proc/net formatting 
 
@@ -123,18 +152,138 @@ fn uid_to_username(target_uid: u32) -> String {
     target_uid.to_string()
 }
 
-//  internal resolve helper 
-fn resolve(proto_file: &str, local: &str, remote: &str) -> Option<ProcessInfo> {
-    let inode = find_socket_inode(proto_file, local, remote)?;
-    let pid   = find_pid_by_inode(inode)?;
-    let (uid, name) = get_process_uid_and_name(pid)?;
-    let username    = uid_to_username(uid);
-    Some(ProcessInfo { pid, name, uid, username })
+impl ProcessResolver {
+    pub fn new() -> Self {
+        Self {
+            conn_cache:   HashMap::new(),
+            inode_cache:  HashMap::new(),
+            proc_cache:   HashMap::new(),
+            user_cache:   HashMap::new(),
+            last_cleanup: Instant::now(),
+        }
+    }
+
+    pub fn resolve_with_direction(
+        &mut self,
+        protocol: Protocol,
+        src_ip: u32, src_port: u16,
+        dst_ip: u32, dst_port: u16,
+    ) -> Option<(ProcessInfo, bool)> {
+        self.maybe_cleanup();
+
+        let key = CacheKey { protocol, src_ip, src_port, dst_ip, dst_port };
+
+        // 1. Check connection cache
+        if let Some((info, dir, ts)) = self.conn_cache.get(&key) {
+            if ts.elapsed() < CACHE_TTL {
+                return Some((info.clone(), *dir));
+            }
+        }
+
+        // 2. Perform resolution
+        let res = self.resolve_internal(protocol, src_ip, src_port, dst_ip, dst_port);
+
+        // 3. Update cache
+        if let Some((ref info, dir)) = res {
+            if self.conn_cache.len() >= CONN_CACHE_MAX {
+                self.conn_cache.clear(); // Simple eviction
+            }
+            self.conn_cache.insert(key, (info.clone(), dir, Instant::now()));
+        }
+
+        res
+    }
+
+    fn resolve_internal(
+        &mut self,
+        protocol: Protocol,
+        src_ip: u32, src_port: u16,
+        dst_ip: u32, dst_port: u16,
+    ) -> Option<(ProcessInfo, bool)> {
+        let proto_file = match protocol {
+            Protocol::Tcp => "/proc/net/tcp",
+            Protocol::Udp => "/proc/net/udp",
+            _ => return None,
+        };
+
+        let src_str = format_socket_addr(src_ip, src_port);
+        let dst_str = format_socket_addr(dst_ip, dst_port);
+
+        // Try src-as-local first (outbound)
+        if let Some(info) = self.resolve_single(proto_file, &src_str, &dst_str) {
+            return Some((info, true));
+        }
+        // Fallback: dst-as-local (inbound)
+        if let Some(info) = self.resolve_single(proto_file, &dst_str, &src_str) {
+            return Some((info, false));
+        }
+
+        None
+    }
+
+    fn resolve_single(&mut self, proto_file: &str, local: &str, remote: &str) -> Option<ProcessInfo> {
+        let inode = find_socket_inode(proto_file, local, remote)?;
+
+        // 1. Inode to PID
+        let pid = if let Some(&(pid, ts)) = self.inode_cache.get(&inode) {
+            if ts.elapsed() < CACHE_TTL { pid } else { self.find_and_cache_pid(inode)? }
+        } else {
+            self.find_and_cache_pid(inode)?
+        };
+
+        // 2. PID to Metadata
+        let (uid, name) = if let Some((uid, name, ts)) = self.proc_cache.get(&pid) {
+            if ts.elapsed() < CACHE_TTL { (*uid, name.clone()) } else { self.find_and_cache_proc(pid)? }
+        } else {
+            self.find_and_cache_proc(pid)?
+        };
+
+        // 3. UID to Username
+        let username = self.user_cache.entry(uid)
+            .or_insert_with(|| uid_to_username(uid))
+            .clone();
+
+        Some(ProcessInfo { pid, name, uid, username })
+    }
+
+    fn find_and_cache_pid(&mut self, inode: u64) -> Option<u32> {
+        let pid = find_pid_by_inode(inode)?;
+        if self.inode_cache.len() >= INODE_CACHE_MAX { self.inode_cache.clear(); }
+        self.inode_cache.insert(inode, (pid, Instant::now()));
+        Some(pid)
+    }
+
+    fn find_and_cache_proc(&mut self, pid: u32) -> Option<(u32, String)> {
+        let res = get_process_uid_and_name(pid)?;
+        if self.proc_cache.len() >= PROC_CACHE_MAX { self.proc_cache.clear(); }
+        self.proc_cache.insert(pid, (res.0, res.1.clone(), Instant::now()));
+        Some(res)
+    }
+
+    fn maybe_cleanup(&mut self) {
+        if self.last_cleanup.elapsed() > Duration::from_secs(60) {
+            let now = Instant::now();
+            self.conn_cache.retain(|_, (_, _, ts)| now.duration_since(*ts) < CACHE_TTL);
+            self.inode_cache.retain(|_, (_, ts)| now.duration_since(*ts) < CACHE_TTL);
+            self.proc_cache.retain(|_, (_, _, ts)| now.duration_since(*ts) < CACHE_TTL);
+            self.last_cleanup = now;
+        }
+    }
 }
 
-//  public API 
-// Locate the process that owns the given TCP/UDP socket (FR3, FR4).
-// Returns `None` if the socket cannot be matched to any local process.
+// Keep the old API for backward compatibility if needed, 
+// but it will be stateless and slower. 
+// For NFR3, the main capture loop should use ProcessResolver.
+
+pub fn find_process_with_direction(
+    protocol: Protocol,
+    src_ip: u32, src_port: u16,
+    dst_ip: u32, dst_port: u16,
+) -> Option<(ProcessInfo, bool)> {
+    let mut resolver = ProcessResolver::new();
+    resolver.resolve_with_direction(protocol, src_ip, src_port, dst_ip, dst_port)
+}
+
 pub fn find_process(
     protocol: Protocol,
     src_ip:   u32, src_port: u16,
@@ -142,33 +291,4 @@ pub fn find_process(
 ) -> Option<ProcessInfo> {
     find_process_with_direction(protocol, src_ip, src_port, dst_ip, dst_port)
         .map(|(info, _)| info)
-}
-
-// Like find_process but also returns the traffic direction:
-//   true: src is the local endpoint (packet is outbound / sent)
-//   false: dst is the local endpoint (packet is inbound  / received)
-//
-// Used by FR5 to distinguish bytes-sent from bytes-received per process.
-pub fn find_process_with_direction(
-    protocol: Protocol,
-    src_ip: u32, src_port: u16,
-    dst_ip: u32, dst_port: u16,
-) -> Option<(ProcessInfo, bool)> {
-    let proto_file = match protocol {
-        Protocol::Tcp   => "/proc/net/tcp",
-        Protocol::Udp   => "/proc/net/udp",
-        _ => return None,
-    };
-    let src_str = format_socket_addr(src_ip, src_port);
-    let dst_str = format_socket_addr(dst_ip, dst_port);
-
-    // Try src-as-local first (outbound packet).
-    if let Some(info) = resolve(proto_file, &src_str, &dst_str) {
-        return Some((info, true));
-    }
-    // Fallback: dst-as-local (inbound packet).
-    if let Some(info) = resolve(proto_file, &dst_str, &src_str) {
-        return Some((info, false));
-    }
-    None
 }
